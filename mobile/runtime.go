@@ -48,15 +48,21 @@ type runtimeState string
 type clientRunner func(context.Context, client.Config, func(string)) error
 
 type runGeneration struct {
-	id            uint64
-	cfg           client.Config
-	cancel        context.CancelFunc
-	ready         chan struct{}
-	done          chan struct{}
-	readyOnce     sync.Once
-	doneOnce      sync.Once
-	stopRequested bool
-	err           error
+	id                    uint64
+	cfg                   client.Config
+	cancel                context.CancelFunc
+	ready                 chan struct{}
+	done                  chan struct{}
+	readyOnce             sync.Once
+	doneOnce              sync.Once
+	stopRequested         bool
+	err                   error
+	occupancyRoom         string
+	occupancyParticipants int
+	occupancyKnown        bool
+	roomStateRoom         string
+	roomState             string
+	roomStateKnown        bool
 }
 
 // Runtime owns one independently configured mobile client lifecycle.
@@ -69,6 +75,11 @@ type Runtime struct {
 	runner         clientRunner
 	// listener hears each session open; see SetSessionListener.
 	listener SessionListener
+	// occupancyListener hears MUC roster changes; see SetOccupancyListener.
+	// ai-generated: the room occupancy listener.
+	occupancyListener OccupancyListener
+	// ai-generated: the room entry and relay state listener.
+	roomStateListener RoomStateListener
 }
 
 // New returns an idle Runtime with documented mobile defaults.
@@ -165,6 +176,8 @@ func (r *Runtime) run(ctx context.Context, gen *runGeneration) {
 		cfg := gen.cfg
 		cfg.RoomURL = profile.RoomID
 		cfg.OnSessionOpen = func(sessionID string) { r.notifySessionOpened(gen, profile.RoomID, sessionID) }
+		cfg.OnRoomState = func(state client.RoomState) { r.notifyRoomState(gen, profile.RoomID, string(state)) }
+		cfg.OnOccupancy = func(participants int) { r.notifyRoomOccupancy(gen, profile.RoomID, participants) }
 		// A room nobody is in ends this run so the next one is tried, but
 		// only while there is a next one: with a single room, giving up
 		// would end the generation and leave the host holding a tunnel it

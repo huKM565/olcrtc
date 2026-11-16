@@ -238,6 +238,9 @@ type Config struct {
 	Name          string
 	OnData        func([]byte)
 	OnPeerData    func(peerID string, data []byte)
+	// OnOccupancy reports the current number of room participants when the provider knows it.
+	// ai-generated: the room occupancy callback.
+	OnOccupancy func(participants int)
 	// OnDatagram and OnPeerDatagram receive the lossy datagram lane; a
 	// transport without one never calls them.
 	OnDatagram     func([]byte)
@@ -281,6 +284,7 @@ func (c Config) EngineConfig() enginebuiltin.Config {
 		Name:                c.Name,
 		OnData:              c.OnData,
 		OnPeerData:          c.OnPeerData,
+		OnOccupancy:         c.OnOccupancy,
 		OnDatagram:          c.OnDatagram,
 		OnPeerDatagram:      c.OnPeerDatagram,
 		DNSServer:           c.DNSServer,

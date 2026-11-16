@@ -145,6 +145,8 @@ type Client struct {
 	// onSessionOpen hears each session id as the session is established;
 	// see Config.OnSessionOpen.
 	onSessionOpen SessionOpenFunc
+	// ai-generated: room entry and relay state callback.
+	onRoomState func(RoomState)
 
 	// endOnEmptyRoom ends the run instead of retrying in a room nobody is
 	// in; see Config.EndOnEmptyRoom.
@@ -258,6 +260,12 @@ type Config struct {
 	// established: on the initial connect and after every reconnect. A host
 	// that cannot read the log learns of a room handover this way.
 	OnSessionOpen SessionOpenFunc
+	// OnRoomState distinguishes entering the provider room from establishing the relay session.
+	// ai-generated: the room state callback.
+	OnRoomState func(RoomState)
+	// OnOccupancy reports the current number of room participants when the provider knows it.
+	// ai-generated: the room occupancy callback.
+	OnOccupancy func(participants int)
 	// EndOnEmptyRoom makes Run return once a reconnect handshake fails with
 	// nothing in the room having sent a frame while it ran - the shape of a
 	// room whose server has been retired. Set it when something above the
@@ -303,7 +311,7 @@ func RunWithAddress(ctx context.Context, cfg Config, onReady func(actualAddr str
 		udpFlows: make(map[uint64]clientUDPFlow), udpFlowIndex: make(map[clientUDPFlowKey]uint64),
 		udpDisabled: cfg.UDPDisabled, maxUDPFlows: normalizeMaxUDPFlows(cfg.UDPMaxFlows),
 		rules: cfg.Direct, dialer: protect.NewDialer(cfg.Resolver),
-		onSessionOpen: cfg.OnSessionOpen, endOnEmptyRoom: cfg.EndOnEmptyRoom,
+		onSessionOpen: cfg.OnSessionOpen, onRoomState: cfg.OnRoomState, endOnEmptyRoom: cfg.EndOnEmptyRoom,
 	}
 	if exchanger, ok := cfg.Resolver.(protect.Exchanger); ok {
 		client.exchanger = exchanger

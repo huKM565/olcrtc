@@ -30,6 +30,7 @@ type LinkRoleConfig struct {
 	DeviceID            string
 	OnData              func([]byte)
 	OnPeerData          func(string, []byte)
+	OnOccupancy         func(int) // ai-generated: the room occupancy callback.
 	OnDatagram          func([]byte)
 	OnPeerDatagram      func(string, []byte)
 	Resolver            protect.Lookup
@@ -55,6 +56,7 @@ func BuildTransportConfig(base LinkConfig, role LinkRoleConfig) transport.Config
 		Name:                names.Generate(),
 		OnData:              role.OnData,
 		OnPeerData:          role.OnPeerData,
+		OnOccupancy:         role.OnOccupancy,
 		OnDatagram:          role.OnDatagram,
 		OnPeerDatagram:      role.OnPeerDatagram,
 		DNSServer:           base.DNSServer,

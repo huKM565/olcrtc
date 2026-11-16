@@ -121,6 +121,12 @@ type Config struct {
 	// established; a host that cannot read the log learns of a room
 	// handover this way.
 	OnSessionOpen SessionOpenFunc
+	// OnRoomState distinguishes entering the provider room from establishing the relay session.
+	// ai-generated: the room state callback.
+	OnRoomState func(RoomState)
+	// OnOccupancy reports the current number of room participants when the provider knows it.
+	// ai-generated: the room occupancy callback.
+	OnOccupancy func(participants int)
 	// EndOnEmptyRoom ends the run when a reconnect handshake finds the room
 	// empty, instead of retrying in it for as long as the tunnel lives. Set
 	// it only when the caller has another room to try.
@@ -186,6 +192,8 @@ func toClientConfig(cfg Config) internalclient.Config {
 		DeviceID: cfg.DeviceID, DeviceIDPath: cfg.DeviceIDPath, Claims: cfg.Claims,
 		OnHealth:       internalclient.HealthFunc(cfg.OnHealth),
 		OnSessionOpen:  internalclient.SessionOpenFunc(cfg.OnSessionOpen),
+		OnRoomState:    cfg.OnRoomState,
+		OnOccupancy:    cfg.OnOccupancy,
 		EndOnEmptyRoom: cfg.EndOnEmptyRoom,
 		UDPDisabled:    cfg.UDPDisabled, UDPMaxFlows: cfg.UDPMaxFlows,
 	}

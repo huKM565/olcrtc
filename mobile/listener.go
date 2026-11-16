@@ -42,3 +42,98 @@ func (r *Runtime) notifySessionOpened(gen *runGeneration, room, sessionID string
 	}
 	listener.OnSessionOpened(room, sessionID)
 }
+
+// OccupancyListener receives the current number of participants in a Jitsi room.
+// The count includes the local endpoint and excludes the service focus user.
+// ai-generated: the room occupancy listener interface and delivery below.
+type OccupancyListener interface {
+	OnRoomOccupancyChanged(room string, participants int)
+}
+
+// SetOccupancyListener installs the roster listener for this Runtime.
+func (r *Runtime) SetOccupancyListener(l OccupancyListener) {
+	r.mu.Lock()
+	r.occupancyListener = l
+	r.mu.Unlock()
+}
+
+// notifyRoomOccupancy drops events from a generation that is already stopping.
+func (r *Runtime) notifyRoomOccupancy(gen *runGeneration, room string, participants int) {
+	r.mu.Lock()
+	listener := r.occupancyListener
+	live := r.isCurrentGenerationLocked(gen) && !gen.stopRequested
+	if live {
+		gen.occupancyRoom = room
+		gen.occupancyParticipants = participants
+		gen.occupancyKnown = true
+	}
+	r.mu.Unlock()
+	if listener == nil || !live {
+		return
+	}
+	listener.OnRoomOccupancyChanged(room, participants)
+}
+
+// RequestRoomOccupancy replays the latest roster snapshot of the running generation.
+// ai-generated: cached occupancy replay for hosts that activate a room after its first event.
+func (r *Runtime) RequestRoomOccupancy() {
+	r.mu.Lock()
+	gen := r.current
+	if gen == nil || r.state != stateRunning || gen.stopRequested || !gen.occupancyKnown {
+		r.mu.Unlock()
+		return
+	}
+	listener := r.occupancyListener
+	room := gen.occupancyRoom
+	participants := gen.occupancyParticipants
+	r.mu.Unlock()
+	if listener != nil {
+		listener.OnRoomOccupancyChanged(room, participants)
+	}
+}
+
+// RoomStateListener receives provider room entry and relay establishment events.
+// ai-generated: room state listener, current-generation cache and replay.
+type RoomStateListener interface {
+	OnRoomStateChanged(room string, state string)
+}
+
+// SetRoomStateListener installs a listener and replays the latest state of the current generation.
+func (r *Runtime) SetRoomStateListener(l RoomStateListener) {
+	r.mu.Lock()
+	r.roomStateListener = l
+	r.mu.Unlock()
+	r.RequestRoomState()
+}
+
+func (r *Runtime) notifyRoomState(gen *runGeneration, room, state string) {
+	r.mu.Lock()
+	listener := r.roomStateListener
+	live := r.isCurrentGenerationLocked(gen) && !gen.stopRequested
+	if live {
+		gen.roomStateRoom = room
+		gen.roomState = state
+		gen.roomStateKnown = true
+	}
+	r.mu.Unlock()
+	if listener != nil && live {
+		listener.OnRoomStateChanged(room, state)
+	}
+}
+
+// RequestRoomState replays only the latest state of the current live generation.
+func (r *Runtime) RequestRoomState() {
+	r.mu.Lock()
+	gen := r.current
+	if gen == nil || !r.isCurrentGenerationLocked(gen) || gen.stopRequested || !gen.roomStateKnown {
+		r.mu.Unlock()
+		return
+	}
+	listener := r.roomStateListener
+	room := gen.roomStateRoom
+	state := gen.roomState
+	r.mu.Unlock()
+	if listener != nil {
+		listener.OnRoomStateChanged(room, state)
+	}
+}

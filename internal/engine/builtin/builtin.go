@@ -49,6 +49,7 @@ type Config struct {
 	Name                string
 	OnData              func([]byte)
 	OnPeerData          func(peerID string, data []byte)
+	OnOccupancy         func(participants int) // ai-generated: the room occupancy callback.
 	OnDatagram          func([]byte)
 	OnPeerDatagram      func(peerID string, data []byte)
 	DNSServer           string
@@ -172,6 +173,7 @@ func engineConfig(
 		Name:                cfg.Name,
 		OnData:              cfg.OnData,
 		OnPeerData:          cfg.OnPeerData,
+		OnOccupancy:         cfg.OnOccupancy,
 		OnDatagram:          cfg.OnDatagram,
 		OnPeerDatagram:      cfg.OnPeerDatagram,
 		DNSServer:           cfg.DNSServer,

@@ -21,6 +21,14 @@ func TestEngineConfigCarriesTheICELocalIP(t *testing.T) {
 	}
 }
 
+// ai-generated: the room occupancy callback crosses the provider config.
+func TestEngineConfigCarriesTheOccupancyCallback(t *testing.T) {
+	got := engineConfig(Config{OnOccupancy: func(int) {}}, engine.Credentials{URL: "u"}, nil)
+	if got.OnOccupancy == nil {
+		t.Fatal("engine config dropped OnOccupancy")
+	}
+}
+
 // Every carrier builds its pion settings through the session's helper
 // (engine.Config.Pion().Options or a PionSession it was handed), so a session
 // field such as the ICE local IP reaches every carrier and none is left behind.

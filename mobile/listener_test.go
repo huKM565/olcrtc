@@ -4,6 +4,7 @@ package mobile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -110,6 +111,122 @@ func TestSessionListenerIgnoresAStoppingGeneration(t *testing.T) {
 	if got := listener.events(); len(got) != 0 {
 		t.Fatalf("session events = %v, want none from a stopping generation", got)
 	}
+}
+
+// ai-generated: replay of the latest room state when the host installs its listener late.
+func TestRoomStateListenerReplaysLatestStateOnActivation(t *testing.T) {
+	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
+		cfg.OnRoomState(client.RoomJoined)
+		cfg.OnRoomState(client.RelayReady)
+		onReady("127.0.0.1:1080")
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := runtime.WaitReady(2000); err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	listener := &recordingRoomStateListener{}
+	runtime.SetRoomStateListener(listener)
+	if got, want := listener.events(), []string{testRoom + " relay-ready"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("room states after listener activation = %v, want %v", got, want)
+	}
+	runtime.RequestRoomState()
+	if got, want := listener.events(), []string{testRoom + " relay-ready", testRoom + " relay-ready"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("room states after replay = %v, want %v", got, want)
+	}
+	if err := runtime.Stop(100); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+type recordingRoomStateListener struct {
+	mu     sync.Mutex
+	states []string
+}
+
+func (l *recordingRoomStateListener) OnRoomStateChanged(room, state string) {
+	l.mu.Lock()
+	l.states = append(l.states, room+" "+state)
+	l.mu.Unlock()
+}
+
+func (l *recordingRoomStateListener) events() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.states...)
+}
+
+// ai-generated: the host receives roster counts without parsing engine logs.
+func TestOccupancyListenerReceivesRoomCounts(t *testing.T) {
+	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
+		cfg.OnOccupancy(3)
+		onReady("127.0.0.1:1080")
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	listener := &recordingOccupancyListener{}
+	runtime.SetOccupancyListener(listener)
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := runtime.WaitReady(2000); err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	if got, want := listener.events(), []string{testRoom + " 3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("occupancy events = %v, want %v", got, want)
+	}
+	if err := runtime.Stop(100); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+// ai-generated: regression test for replaying a cached roster after room activation.
+func TestRequestRoomOccupancyReplaysLatestCount(t *testing.T) {
+	runtime := configuredRuntime(t, func(ctx context.Context, cfg client.Config, onReady func(string)) error {
+		cfg.OnOccupancy(3)
+		onReady("127.0.0.1:1080")
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	listener := &recordingOccupancyListener{}
+	runtime.SetOccupancyListener(listener)
+	if err := runtime.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := runtime.WaitReady(2000); err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	runtime.RequestRoomOccupancy()
+	if got, want := listener.events(), []string{testRoom + " 3", testRoom + " 3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("occupancy events = %v, want %v", got, want)
+	}
+	if err := runtime.Stop(100); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	runtime.RequestRoomOccupancy()
+	if got, want := listener.events(), []string{testRoom + " 3", testRoom + " 3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("occupancy events after stop = %v, want %v", got, want)
+	}
+}
+
+type recordingOccupancyListener struct {
+	mu       sync.Mutex
+	received []string
+}
+
+func (l *recordingOccupancyListener) OnRoomOccupancyChanged(room string, participants int) {
+	l.mu.Lock()
+	l.received = append(l.received, fmt.Sprintf("%s %d", room, participants))
+	l.mu.Unlock()
+}
+
+func (l *recordingOccupancyListener) events() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.received...)
 }
 
 type recordingListener struct {

@@ -76,6 +76,7 @@ type Session struct {
 
 	onData              func([]byte)
 	onPeerData          func(peerID string, data []byte)
+	occupancy           occupancyReporter // ai-generated: MUC roster reporting.
 	requireTargetedPeer bool
 	jSess               atomic.Pointer[j.Session]
 	jSessMu             sync.Mutex
@@ -192,6 +193,7 @@ func New(_ context.Context, cfg engine.Config) (engine.Session, error) {
 		httpClient:          protect.NewHTTPClient(cfg.Resolver),
 		onData:              cfg.OnData,
 		onPeerData:          cfg.OnPeerData,
+		occupancy:           occupancyReporter{last: -1, onChange: cfg.OnOccupancy},
 		requireTargetedPeer: cfg.RequireTargetedPeer,
 		sendQueue:           make(chan []byte, defaultSendQueueSize),
 		peerQueues:          make(map[string]*peerQueue),
@@ -266,6 +268,8 @@ func (s *Session) Connect(ctx context.Context) error {
 	s.setJSession(jSess)
 	logger.Infof("jitsi: MUC joined %s/%s; waiting for peer …", s.host, s.room)
 
+	s.reportOccupancy()
+	s.goLaunch(s.watchOccupancy)
 	s.goLaunch(s.sendLoop)
 	s.goLaunch(s.recvLoop)
 	s.goLaunch(s.waitForJingle)

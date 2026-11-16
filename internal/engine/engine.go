@@ -51,6 +51,9 @@ type Config struct {
 	Extra      map[string]string
 	OnData     func([]byte)
 	OnPeerData func(peerID string, data []byte)
+	// OnOccupancy reports the current number of room participants when the engine knows it.
+	// ai-generated: the room occupancy callback.
+	OnOccupancy func(participants int)
 	// OnDatagram receives unordered, lossy datagram payloads. Unlike OnData
 	// they never pass through smux and the room may drop them.
 	OnDatagram     func([]byte)

@@ -60,6 +60,7 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	}, c.linkRole(cfg))
 	link, err := transport.New(ctx, cfg.Transport, linkCfg)
 	if err != nil {
+		c.notifyRoomState(RoomJoinFailed)
 		return fmt.Errorf("failed to create link: %w", err)
 	}
 	c.ln = link
@@ -74,8 +75,10 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 		}
 	})
 	if connectErr := link.Connect(ctx); connectErr != nil {
+		c.notifyRoomState(RoomJoinFailed)
 		return fmt.Errorf("failed to connect link: %w", connectErr)
 	}
+	c.notifyRoomState(RoomJoined)
 	// ai-generated: moved this call earlier in the function (was after the
 	// handshake block below) and added this comment explaining why.
 	// Start watching for reconnect requests now, not after the handshake
@@ -97,6 +100,7 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 		link, conn, controlConn, tunnelcore.ClientRole,
 	)
 	if err != nil {
+		c.notifyRoomState(RelayFailed)
 		if pair != nil {
 			_ = pair.Close()
 		}
@@ -105,14 +109,17 @@ func (c *Client) bringUpLink(ctx context.Context, cfg Config, cancel context.Can
 	control, sessionID, peerID, err := openControlStream(ctx, pair.ControlSession, c.deviceID, c.claims)
 	if err != nil {
 		err = c.classifyHandshakeFailure(err, conn, controlConn)
+		c.notifyRoomState(RelayFailed)
 		_ = pair.Close()
 		return fmt.Errorf("handshake: %w", err)
 	}
 	if err := confirmPeer(link, peerID); err != nil {
+		c.notifyRoomState(RelayFailed)
 		_ = pair.Close()
 		return err
 	}
 	if waitErr := waitForPeer(ctx, link); waitErr != nil {
+		c.notifyRoomState(RelayFailed)
 		_ = pair.Close()
 		return waitErr
 	}
@@ -796,6 +803,7 @@ func (c *Client) helloTimeout() time.Duration {
 // notifySessionOpen reports an established session to the host when it asked
 // to hear about them. The initial connect and every reconnect land here.
 func (c *Client) notifySessionOpen(sessionID string) {
+	c.notifyRoomState(RelayReady)
 	if c.onSessionOpen != nil {
 		c.onSessionOpen(sessionID)
 	}
@@ -845,7 +853,8 @@ func (c *Client) sessionSnapshot() (*smux.Session, string, <-chan struct{}) {
 // ai-generated: this function and its DefaultICE.
 func (c *Client) linkRole(cfg Config) tunnelcore.LinkRoleConfig {
 	return tunnelcore.LinkRoleConfig{
-		DeviceID: c.deviceID, OnData: c.onData, OnDatagram: c.onDatagram, Resolver: cfg.Resolver,
+		DeviceID: c.deviceID, OnData: c.onData, OnDatagram: c.onDatagram,
+		OnOccupancy: cfg.OnOccupancy, Resolver: cfg.Resolver,
 		RequireTargetedPeer: true,
 		DefaultICE:          roomhint.ICETCP,
 	}
