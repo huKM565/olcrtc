@@ -88,6 +88,7 @@ Ready-made examples:
 | `data` | optional: directory holding `names`/`surnames` files that override the built-in display-name dictionaries. Resolved relative to the YAML file |
 | `debug` | verbose logging |
 | `stats.listen` | loopback address serving `GET /stats` with per-key byte totals, e.g. `127.0.0.1:9464`; empty disables |
+| `egress.allow` | server only: one exact `IP:port` that TCP and UDP may reach despite the private-address policy, for a dedicated loopback core; empty keeps every such target blocked |
 | `access_log` | server only: a FIFO the server writes an access line to for every stream it opens and every new UDP destination of a session (see [Access lines](#access-lines)). Resolved relative to the YAML file; empty, the default, writes nothing |
 
 `crypto.key_file` is read relative to the YAML file. You cannot set `crypto.key` and `crypto.key_file` at the same time.
@@ -121,7 +122,7 @@ route:
 
 ## Server egress
 
-A server never opens a TCP connection or a UDP flow for a client into its own host or its networks: loopback, private, link-local (cloud metadata included), shared CGNAT space (`100.64.0.0/10`), multicast, reserved and the other ranges Xray's freedom outbound refuses by default. A name is resolved once and judged by every address it resolves to - one refused address refuses the target - and the checked address itself is dialed, so the name is never resolved a second time. An IPv4-mapped IPv6 address is judged as the IPv4 address it reaches. With `socks.proxy_addr` a name goes to the proxy unresolved, for the proxy to resolve under its own policy; only a literal address is judged.
+A server never opens a TCP connection or a UDP flow for a client into its own host or its networks: loopback, private, link-local (cloud metadata included), shared CGNAT space (`100.64.0.0/10`), multicast, reserved and the other ranges Xray's freedom outbound refuses by default. A name is resolved once and judged by every address it resolves to - one refused address refuses the target - and the checked address itself is dialed, so the name is never resolved a second time. An IPv4-mapped IPv6 address is judged as the IPv4 address it reaches. With `socks.proxy_addr` a name goes to the proxy unresolved, for the proxy to resolve under its own policy; only a literal address is judged. `egress.allow` is the sole exception: it names one literal IP and port, both must match, and it lifts no other address, port or range.
 
 Without `debug` the server's log names no destination: a failed connect says why (`blocked target`, `no such host`, `connection refused`, ...) but not where, and the `traffic:` line carries the session and the byte counts. `debug: true` adds the target to every connect.
 

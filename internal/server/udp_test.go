@@ -4,11 +4,23 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/udpwire"
 )
+
+func TestExactAllowedUDPTarget(t *testing.T) {
+	allowed := netip.MustParseAddrPort("127.0.0.1:10000")
+	s := &Server{allowedTarget: &allowed}
+	if _, err := s.resolveUDPTarget(udpwire.Endpoint{Host: allowed.Addr().String(), Port: 10000}, false); err != nil {
+		t.Fatalf("allowed UDP target: %v", err)
+	}
+	if _, err := s.resolveUDPTarget(udpwire.Endpoint{Host: allowed.Addr().String(), Port: 10001}, false); !errors.Is(err, errBlockedTarget) {
+		t.Fatalf("another UDP port error = %v, want blocked target", err)
+	}
+}
 
 const (
 	testUDPPeerID        = "peer-1"

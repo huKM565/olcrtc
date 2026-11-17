@@ -87,6 +87,7 @@ type File struct {
 	Data     string    `yaml:"data"`
 	Debug    bool      `yaml:"debug"`
 	Stats    Stats     `yaml:"stats"`
+	Egress   Egress    `yaml:"egress"`
 
 	// KeysPath is where the top-level crypto.keys_file was read from, a
 	// relative path taken against the config file; empty when the keys are
@@ -110,6 +111,12 @@ type File struct {
 // like data, so it lives on the file rather than on a profile.
 type Stats struct {
 	Listen string `yaml:"listen"` // loopback host:port serving GET /stats; empty disables
+}
+
+// Egress configures one exact target a server may reach despite the default
+// private-address policy. ai-generated: the whole block (egress.allow).
+type Egress struct {
+	Allow string `yaml:"allow"`
 }
 
 // Profile is a failover entry that overrides top-level runtime fields.
@@ -503,6 +510,7 @@ func Apply(file File) session.Config {
 	cfg.Amount = file.Gen.Amount
 	cfg.StatsListen = file.Stats.Listen
 	cfg.AccessLog = file.AccessLog
+	cfg.AllowedTarget = file.Egress.Allow
 
 	return cfg
 }

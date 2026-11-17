@@ -106,11 +106,12 @@ type Server struct {
 	access *accessLog
 
 	// unsafeAllowPrivateTargets lifts the egress policy (blockedRanges) for
-	// TCP CONNECT and UDP flows alike; tests only. dialTarget dials a
-	// CONNECT's checked ip:port, nil meaning the protected dialer; a test
-	// sets it to see which address a CONNECT reaches. ai-generated: both
-	// fields (egress hardening; the first was UDP-only).
+	// TCP CONNECT and UDP flows alike; tests only. allowedTarget exempts one
+	// exact ip:port. dialTarget dials a CONNECT's checked ip:port, nil meaning
+	// the protected dialer; a test sets it to see which address a CONNECT
+	// reaches. ai-generated: the fields (egress hardening and egress.allow).
 	unsafeAllowPrivateTargets bool
+	allowedTarget             *netip.AddrPort
 	dialTarget                func(ctx context.Context, network, address string) (net.Conn, error)
 
 	// UDP relay state (see udp.go). udpPendingFlows counts flows being
@@ -156,6 +157,9 @@ type Config struct {
 	// Xray's form with the key id as the email. Empty writes nothing.
 	// ai-generated: the field (access_log).
 	AccessLog string
+	// AllowedTarget is one exact IP:port exempt from the egress policy.
+	// ai-generated: the field (egress.allow).
+	AllowedTarget string
 	// UDPDisabled turns the SOCKS5 UDP relay off; UDPMaxFlows caps concurrent
 	// flows (0 means the default). UnsafeAllowPrivateTargets lets TCP CONNECT
 	// and UDP flows reach loopback, private, link-local and the other blocked
@@ -210,6 +214,15 @@ func Run(ctx context.Context, cfg Config) error {
 	if onTraffic == nil {
 		onTraffic = func(string, string, uint64, uint64) {}
 	}
+	var allowedTarget *netip.AddrPort
+	if cfg.AllowedTarget != "" {
+		target, parseErr := netip.ParseAddrPort(cfg.AllowedTarget)
+		if parseErr != nil {
+			return fmt.Errorf("parse egress allowed target: %w", parseErr)
+		}
+		target = netip.AddrPortFrom(target.Addr().Unmap(), target.Port())
+		allowedTarget = &target
+	}
 	s := &Server{
 		ring: muxconn.NewRingSource(ring), authHook: hook, onOpen: onOpen, onClose: onClose, onTraffic: onTraffic,
 		dnsServer: cfg.DNSServer, resolver: tunnelcore.Resolver(cfg.Resolver, cfg.DNSServer),
@@ -222,6 +235,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// ai-generated: the test hook (egress hardening); a release build
 		// has no hook and always keeps the policy.
 		unsafeAllowPrivateTargets: cfg.UnsafeAllowPrivateTargets || testhooks.AllowPrivateTargets(),
+		allowedTarget:             allowedTarget,
 		udpFlows:                  make(map[serverUDPKey]*serverUDPFlow),
 	}
 	// ai-generated: the access log, which names a stream's key by the meter's

@@ -552,7 +552,7 @@ func (s *Server) resolveUDPTarget(endpoint udpwire.Endpoint, viaProxy bool) (udp
 	}
 	ctx, cancel := context.WithTimeout(s.udpBaseCtx(), udpLookupTimeout)
 	defer cancel()
-	addrs, err := s.targetAddrs(ctx, "ip", endpoint.Host)
+	addrs, err := s.targetAddrs(ctx, "ip", endpoint.Host, int(endpoint.Port))
 	if err != nil {
 		return udpDialTarget{}, err
 	}

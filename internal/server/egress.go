@@ -82,7 +82,7 @@ func blockedAddr(addr netip.Addr) bool {
 	return false
 }
 
-// targetAddrs returns the addresses the exit may dial for host: the literal
+// targetAddrs returns the addresses the exit may dial for host:port: the literal
 // itself, or what the server's resolver answers for the name in network
 // ("ip" or "ip4"). One refused address refuses the target, so a name cannot
 // carry a private address in beside a public one. The caller dials exactly
@@ -90,9 +90,9 @@ func blockedAddr(addr netip.Addr) bool {
 // and the dial.
 //
 // ai-generated: the whole function (egress hardening).
-func (s *Server) targetAddrs(ctx context.Context, network, host string) ([]netip.Addr, error) {
+func (s *Server) targetAddrs(ctx context.Context, network, host string, port int) ([]netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return s.allowTargets([]netip.Addr{addr})
+		return s.allowTargets([]netip.Addr{addr}, port)
 	}
 	ips, err := s.lookup().LookupIP(ctx, network, host)
 	if err != nil {
@@ -107,16 +107,19 @@ func (s *Server) targetAddrs(ctx context.Context, network, host string) ([]netip
 	if len(addrs) == 0 {
 		return nil, errNoTargetAddress
 	}
-	return s.allowTargets(addrs)
+	return s.allowTargets(addrs, port)
 }
 
 // allowTargets unmaps addrs in place, or refuses them all when one is an
-// address the exit must not reach.
+// address the exit must not reach. The configured allowedTarget is the only
+// exception and applies to its exact address and port.
 //
 // ai-generated: the whole function (egress hardening).
-func (s *Server) allowTargets(addrs []netip.Addr) ([]netip.Addr, error) {
+func (s *Server) allowTargets(addrs []netip.Addr, port int) ([]netip.Addr, error) {
 	for i, addr := range addrs {
-		if !s.unsafeAllowPrivateTargets && blockedAddr(addr) {
+		allowed := s.allowedTarget != nil && port > 0 && port <= 65535 &&
+			*s.allowedTarget == netip.AddrPortFrom(addr.Unmap(), uint16(port))
+		if !allowed && !s.unsafeAllowPrivateTargets && blockedAddr(addr) {
 			return nil, errBlockedTarget
 		}
 		addrs[i] = addr.Unmap()
@@ -238,7 +241,7 @@ func (s *Server) dial(ctx context.Context, request ConnectRequest) (net.Conn, er
 	// resolve under its own policy (Tor, WARP), as on the UDP path: only a
 	// literal can be judged here. ai-generated: this check (egress hardening).
 	if isLiteral(request.Addr) {
-		if _, err := s.targetAddrs(ctx, "ip", request.Addr); err != nil {
+		if _, err := s.targetAddrs(ctx, "ip", request.Addr, request.Port); err != nil {
 			return nil, err
 		}
 	}
@@ -264,7 +267,7 @@ func (s *Server) dial(ctx context.Context, request ConnectRequest) (net.Conn, er
 //
 // ai-generated: the whole function (egress hardening).
 func (s *Server) dialDirect(ctx context.Context, request ConnectRequest) (net.Conn, error) {
-	addrs, err := s.targetAddrs(ctx, "ip4", request.Addr)
+	addrs, err := s.targetAddrs(ctx, "ip4", request.Addr, request.Port)
 	if err != nil {
 		return nil, err
 	}

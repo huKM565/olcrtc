@@ -264,6 +264,13 @@ func TestApplyMapsStatsListen(t *testing.T) {
 	}
 }
 
+func TestApplyMapsEgressAllow(t *testing.T) {
+	got := Apply(File{Mode: testModeSrv, Egress: Egress{Allow: "127.0.0.1:10000"}})
+	if got.AllowedTarget != "127.0.0.1:10000" {
+		t.Fatalf("AllowedTarget = %q, want the egress.allow value", got.AllowedTarget)
+	}
+}
+
 func TestLoadCryptoKeysListAndFile(t *testing.T) {
 	dir := t.TempDir()
 	ring := []string{

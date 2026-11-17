@@ -111,6 +111,7 @@ func runServer(
 		TransportOptions: opts, Engine: cfg.Engine, URL: cfg.URL, Token: cfg.Token,
 		ProviderToken: cfg.ProviderToken, Liveness: liveness, Traffic: traffic,
 		UnsafeAllowPrivateTargets: cfg.UnsafeAllowPrivateTargets, // ai-generated (egress hardening)
+		AllowedTarget:             cfg.AllowedTarget,             // ai-generated (egress.allow)
 		OnSessionOpen: func(sessionID, deviceID string, claims map[string]any) {
 			logger.Infof("session opened: id=%s device=%s claims=%v", sessionID, deviceID, claims)
 		},

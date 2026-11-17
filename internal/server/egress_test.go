@@ -142,6 +142,20 @@ func captureLog(t *testing.T) *lockedLog {
 	return &buf
 }
 
+func TestExactAllowedTarget(t *testing.T) {
+	allowed := netip.MustParseAddrPort("127.0.0.1:10000")
+	s := &Server{allowedTarget: &allowed}
+	if _, err := s.targetAddrs(context.Background(), "ip4", allowed.Addr().String(), 10000); err != nil {
+		t.Fatalf("allowed target: %v", err)
+	}
+	if _, err := s.targetAddrs(context.Background(), "ip4", allowed.Addr().String(), 10001); !errors.Is(err, errBlockedTarget) {
+		t.Fatalf("another port error = %v, want blocked target", err)
+	}
+	if _, err := s.targetAddrs(context.Background(), "ip4", "10.0.0.1", 10000); !errors.Is(err, errBlockedTarget) {
+		t.Fatalf("another address error = %v, want blocked target", err)
+	}
+}
+
 func TestBlockedAddr(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1", "127.8.9.10", "0.0.0.0", "0.1.2.3",
