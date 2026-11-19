@@ -88,17 +88,19 @@ def render_group(group, rooms, vless):
     for profile, prefix in PROFILES:
         if f"{prefix}1" not in rooms:
             continue
-        count = sum(label.startswith(prefix) for label in rooms) if prefix == "m" else 4
-        selected = [rooms[f"{prefix}{index}"] for index in range(1, count + 1)]
-        keys = {room["key"] for room in selected}
-        profile_name = f"{profile} {count}x (пойдет для мобильного интернета)" if prefix == "m" else profile
-        output.append(olc_link(selected[0], f"{group} — {profile_name}"))
-        output.append(f"##group: {group}")
-        if len(keys) == 1:
-            output.append("##rooms: " + ", ".join(room["room"] for room in selected[1:]))
-        else:
-            output.extend(f"##bond-room: {olc_link(room)}" for room in selected[1:])
-        output.append(f"##bond-vless: {bond_vless}")
+        available = sum(label.startswith(prefix) for label in rooms) if prefix == "m" else 4
+        counts = (4, 8, 12) if prefix == "m" and available == 12 else (available,)
+        for count in counts:
+            selected = [rooms[f"{prefix}{index}"] for index in range(1, count + 1)]
+            keys = {room["key"] for room in selected}
+            profile_name = f"{profile} {count}x (пойдет для мобильного интернета)" if prefix == "m" else profile
+            output.append(olc_link(selected[0], f"{group} — {profile_name}"))
+            output.append(f"##group: {group}")
+            if len(keys) == 1:
+                output.append("##rooms: " + ", ".join(room["room"] for room in selected[1:]))
+            else:
+                output.extend(f"##bond-room: {olc_link(room)}" for room in selected[1:])
+            output.append(f"##bond-vless: {bond_vless}")
     return output
 
 

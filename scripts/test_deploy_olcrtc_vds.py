@@ -813,8 +813,16 @@ class SubscriptionTest(DeployLifecycleTest):
                 bundle.write_text("\n".join(sections))
                 rooms, vless = module.load_bundle(bundle)
                 lines = module.render_group("Германия", rooms, vless)
-                self.assertTrue(lines[0].endswith(f"Германия — Mamba {count}x (пойдет для мобильного интернета)"))
-                self.assertEqual(count - 1, lines[2].count(",") + 1)
+                first_count = 4 if count == 12 else count
+                self.assertTrue(lines[0].endswith(f"Германия — Mamba {first_count}x (пойдет для мобильного интернета)"))
+                self.assertEqual(first_count - 1, lines[2].count(",") + 1)
+                if count == 12:
+                    names = [line.split("$", 1)[1] for line in lines if line.startswith("olcrtc://")]
+                    self.assertEqual([
+                        "Германия — Mamba 4x (пойдет для мобильного интернета)",
+                        "Германия — Mamba 8x (пойдет для мобильного интернета)",
+                        "Германия — Mamba 12x (пойдет для мобильного интернета)",
+                    ], names[:3])
 
     def test_subscription_fields_strip_supported_yaml_quotes(self):
         spec = importlib.util.spec_from_file_location(

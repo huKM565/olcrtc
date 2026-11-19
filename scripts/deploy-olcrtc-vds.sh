@@ -357,7 +357,11 @@ subscription_remote() {
     bundle="${work}/vds-${index}.bundle"
     fetch_bundle "${bundle}"
     generator_args+=("--vds" "${group}=${bundle}")
-    profile_count=$((profile_count + 2))
+    if [ "${MAMBA_COUNT:-4}" = 12 ]; then
+      profile_count=$((profile_count + 4))
+    else
+      profile_count=$((profile_count + 2))
+    fi
     if [ "${TELEMOST_ENABLED:-true}" = true ]; then
       profile_count=$((profile_count + 1))
     fi
