@@ -1,0 +1,17 @@
+[Unit]
+Description=IlyukhaLine olcRTC room %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ilyukhaline/bin/olcrtc /etc/ilyukhaline/%i.yaml
+Restart=always
+RestartSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

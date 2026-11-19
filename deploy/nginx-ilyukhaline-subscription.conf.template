@@ -1,0 +1,7 @@
+location = __PUBLISH_URI__ {
+    alias __PUBLISH_PATH__;
+    default_type text/plain;
+    autoindex off;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+}

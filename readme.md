@@ -122,6 +122,21 @@ If you already have the repo cloned, run `./install.sh` directly instead.
 
 Full instructions are in [docs/fast.md](docs/fast.md) and [docs/manual.md](docs/manual.md).
 
+## Multi-room VDS deployment
+
+`scripts/deploy-olcrtc-vds.sh` deploys a room pool in one run: one systemd service per room, a shared Xray VLESS inbound, automatic restarts and rollback on a failed deploy. It supports Mamba 4x/8x/12x, VK Calls 4x and SaluteJazz 4x, and can generate and publish an IlyukhaLine subscription.
+
+```sh
+cp scripts/deploy-olcrtc-vds.example.conf /tmp/olcrtc-vds.conf
+chmod 600 /tmp/olcrtc-vds.conf
+$EDITOR /tmp/olcrtc-vds.conf
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf check
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf build
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf deploy
+```
+
+`MAMBA_COUNT` accepts `4`, `8` or `12`. For 8x/12x, add every `MAMBA_URL_N`; all `MAMBA_KEY_N` values within a pool must match. `status` reports every room and Xray, while `subscription --output /path/subscription.txt` generates the subscription. Never commit the resulting configuration with real secrets.
+
 ## Documentation
 
 - [about.md](docs/about.md) - architecture, providers, transports, public API

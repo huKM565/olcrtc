@@ -1,0 +1,24 @@
+olcrtc://jitsi?datachannel@https://mamba.example.invalid/room-1#0101010101010101010101010101010101010101010101010101010101010101$Германия — Mamba 4x (пойдет для мобильного интернета)
+##group: Германия
+##rooms: https://mamba.example.invalid/room-2, https://mamba.example.invalid/room-3, https://mamba.example.invalid/room-4
+##bond-vless: vless://11111111-1111-1111-1111-111111111111@127.0.0.1:10000?security=none&encryption=none#VLESS
+olcrtc://vkcalls?vp8channel@https://vk.com/call/join/fake-room-1#0202020202020202020202020202020202020202020202020202020202020202$Германия — VK 4x (обход белых списков)
+##group: Германия
+##rooms: https://vk.com/call/join/fake-room-2, https://vk.com/call/join/fake-room-3, https://vk.com/call/join/fake-room-4
+##bond-vless: vless://11111111-1111-1111-1111-111111111111@127.0.0.1:10000?security=none&encryption=none#VLESS
+olcrtc://salutejazz?datachannel@room1:pass1word#0404040404040404040404040404040404040404040404040404040404040404$Германия — SaluteJazz 4x
+##group: Германия
+##rooms: room2:pass2word, room3:pass3word, room4:pass4word
+##bond-vless: vless://11111111-1111-1111-1111-111111111111@127.0.0.1:10000?security=none&encryption=none#VLESS
+olcrtc://jitsi?datachannel@https://mamba.example.invalid/room-1-fi#0101010101010101010101010101010101010101010101010101010101010101$Финляндия — Mamba 4x (пойдет для мобильного интернета)
+##group: Финляндия
+##rooms: https://mamba.example.invalid/room-2-fi, https://mamba.example.invalid/room-3-fi, https://mamba.example.invalid/room-4-fi
+##bond-vless: vless://22222222-2222-2222-2222-222222222222@127.0.0.1:10001?security=none&encryption=none#VLESS
+olcrtc://vkcalls?vp8channel@https://vk.com/call/join/fake-room-1-fi#0202020202020202020202020202020202020202020202020202020202020202$Финляндия — VK 4x (обход белых списков)
+##group: Финляндия
+##rooms: https://vk.com/call/join/fake-room-2-fi, https://vk.com/call/join/fake-room-3-fi, https://vk.com/call/join/fake-room-4-fi
+##bond-vless: vless://22222222-2222-2222-2222-222222222222@127.0.0.1:10001?security=none&encryption=none#VLESS
+olcrtc://salutejazz?datachannel@firoom1:pass1word#0404040404040404040404040404040404040404040404040404040404040404$Финляндия — SaluteJazz 4x
+##group: Финляндия
+##rooms: firoom2:pass2word, firoom3:pass3word, firoom4:pass4word
+##bond-vless: vless://22222222-2222-2222-2222-222222222222@127.0.0.1:10001?security=none&encryption=none#VLESS

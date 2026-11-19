@@ -1,0 +1,17 @@
+[Unit]
+Description=IlyukhaLine loopback VLESS Xray
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ilyukhaline/bin/xray run -config /etc/ilyukhaline/xray.json
+Restart=always
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

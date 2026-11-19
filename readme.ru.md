@@ -107,6 +107,21 @@ curl -fsSL https://raw.githubusercontent.com/ghostlane-project/olcrtc/proofkit/i
 
 Полные инструкции в [docs/fast.md](docs/fast.ru.md) и [docs/manual.md](docs/manual.ru.md).
 
+## Установка нескольких комнат на ВДС
+
+`scripts/deploy-olcrtc-vds.sh` разворачивает пул комнат за один запуск: отдельный systemd-сервис для каждой комнаты, общий VLESS-вход Xray, автоперезапуск и откат при неудачном deploy. Поддерживаются Mamba 4x/8x/12x, VK Calls 4x и SaluteJazz 4x. Дополнительно скрипт собирает и публикует подписку для IlyukhaLine.
+
+```sh
+cp scripts/deploy-olcrtc-vds.example.conf /tmp/olcrtc-vds.conf
+chmod 600 /tmp/olcrtc-vds.conf
+$EDITOR /tmp/olcrtc-vds.conf
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf check
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf build
+./scripts/deploy-olcrtc-vds.sh --config /tmp/olcrtc-vds.conf deploy
+```
+
+`MAMBA_COUNT` принимает `4`, `8` или `12`. Для 8x/12x добавь в конфиг `MAMBA_URL_N` для каждой комнаты; `MAMBA_KEY_N` должен быть одинаковым внутри пула. `status` показывает состояние всех комнат и Xray, `subscription --output /путь/subscription.txt` собирает подписку. В конфиге не должно быть настоящих секретов при публикации его в git.
+
 ## Документация
 
 - [about.md](docs/about.ru.md) - архитектура, провайдеры, транспорты, публичный API
