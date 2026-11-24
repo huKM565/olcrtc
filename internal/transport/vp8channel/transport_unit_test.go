@@ -756,27 +756,31 @@ func TestReorderBufferReleasesAGapThatOutlastsTheHold(t *testing.T) {
 
 func TestReorderBufferReusesPacketStorage(t *testing.T) {
 	buffer := newReorderBuffer()
-	firstInput := &rtp.Packet{
-		Header:  rtp.Header{SequenceNumber: 1},
-		Payload: []byte("first"),
-	}
-	var first *rtp.Packet
-	buffer.push(firstInput, func(packet *rtp.Packet) {
-		first = packet
-		if string(packet.Payload) != "first" {
-			t.Fatalf("first payload = %q", packet.Payload)
+	buffer.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 1}, Payload: []byte("init")}, func(*rtp.Packet) {})
+
+	var firstBuffered *rtp.Packet
+	buffer.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 3}, Payload: []byte("first")}, func(*rtp.Packet) {})
+	buffer.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 2}, Payload: []byte("gap")}, func(packet *rtp.Packet) {
+		if packet.SequenceNumber == 3 {
+			firstBuffered = packet
+			if string(packet.Payload) != "first" {
+				t.Fatalf("first payload = %q", packet.Payload)
+			}
 		}
 	})
-	secondInput := &rtp.Packet{
-		Header:  rtp.Header{SequenceNumber: 2},
-		Payload: []byte("second"),
+	if firstBuffered == nil {
+		t.Fatal("expected buffered packet seq 3 to be delivered")
 	}
-	buffer.push(secondInput, func(packet *rtp.Packet) {
-		if packet != first {
-			t.Fatal("reorder buffer did not reuse delivered packet storage")
-		}
-		if string(packet.Payload) != "second" {
-			t.Fatalf("second payload = %q", packet.Payload)
+
+	buffer.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 5}, Payload: []byte("second")}, func(*rtp.Packet) {})
+	buffer.push(&rtp.Packet{Header: rtp.Header{SequenceNumber: 4}, Payload: []byte("gap2")}, func(packet *rtp.Packet) {
+		if packet.SequenceNumber == 5 {
+			if packet != firstBuffered {
+				t.Fatal("reorder buffer did not reuse delivered packet storage")
+			}
+			if string(packet.Payload) != "second" {
+				t.Fatalf("second payload = %q", packet.Payload)
+			}
 		}
 	})
 }

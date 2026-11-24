@@ -5,6 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment=GOGC=200 GOMAXPROCS=1
 ExecStart=/opt/ilyukhaline/bin/olcrtc /etc/ilyukhaline/%i.yaml
 Restart=always
 RestartSec=30s

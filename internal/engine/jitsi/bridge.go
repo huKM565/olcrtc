@@ -278,30 +278,35 @@ func (s *Session) drainPeerQueuesRetry() <-chan time.Time {
 // does not hold the others. Queues nobody has touched for peerQueueIdle and
 // nobody holds are dropped at the end. Reports whether a window held any.
 func (s *Session) drainPeerQueues() bool {
+	defer func() {
+		clear(s.drainPeers)
+		clear(s.drainQueues)
+		s.drainPeers = s.drainPeers[:0]
+		s.drainQueues = s.drainQueues[:0]
+	}()
 	for {
 		s.peerQueueMu.Lock()
-		peers := make([]string, 0, len(s.peerQueues))
-		queues := make([]*peerQueue, 0, len(s.peerQueues))
+		s.drainPeers = s.drainPeers[:0]
+		s.drainQueues = s.drainQueues[:0]
 		for id, pq := range s.peerQueues {
-			peers = append(peers, id)
-			queues = append(queues, pq)
+			s.drainPeers = append(s.drainPeers, id)
+			s.drainQueues = append(s.drainQueues, pq)
 		}
 		s.peerQueueMu.Unlock()
 
 		progressed, held := false, false
-		for i, pq := range queues {
+		for i, pq := range s.drainQueues {
 			select {
 			case <-s.done:
 				return false
 			default:
 			}
-			// ai-generated: the relay window check (olcrtc#15).
-			if len(pq.ch) > 0 && !s.relayReady(peers[i]) {
+			if len(pq.ch) > 0 && !s.relayReady(s.drainPeers[i]) {
 				held = true
 			} else {
 				select {
 				case data := <-pq.ch:
-					s.sendBridgeFrame(peers[i], data)
+					s.sendBridgeFrame(s.drainPeers[i], data)
 					progressed = true
 				default:
 				}
@@ -430,12 +435,6 @@ func (s *Session) waitBridgeRoom() bool {
 	}
 }
 
-// endpointMessage mirrors the wire shape of a Jitsi Videobridge EndpointMessage.
-// Field order matters: some Jackson versions on the bridge side drop the
-// payload field entirely if it appears before "to" (see
-// https://github.com/jitsi/jitsi-videobridge/pull/2424), so this is declared
-// and marshalled as a struct (not a map) to force colibriClass, to,
-// msgPayload in that exact order regardless of Go's map-key sorting.
 type endpointMessage struct {
 	ColibriClass string             `json:"colibriClass"` //nolint:tagliatelle // JVB wire protocol uses camelCase
 	To           string             `json:"to"`           //nolint:tagliatelle // JVB wire protocol uses camelCase
@@ -443,14 +442,9 @@ type endpointMessage struct {
 }
 
 type endpointRawPayload struct {
-	Raw string `json:"raw"`
+	Raw []byte `json:"raw"`
 }
 
-// sendEndpointRaw sends opaque bytes as msgPayload.raw instead of the
-// nonstandard top-level "raw" field used by the underlying j library's
-// BridgeSendRaw. Per the JVB EndpointMessage docs, the payload belongs under
-// msgPayload; some bridge builds silently drop the frame otherwise. See
-// olcrtc#143.
 func sendEndpointRaw(jSess *j.Session, to string, data []byte) error {
 	br := jSess.Bridge()
 	if br == nil {
@@ -462,10 +456,6 @@ func sendEndpointRaw(jSess *j.Session, to string, data []byte) error {
 	return nil
 }
 
-// trySendEndpointRaw is sendEndpointRaw that never waits: a websocket bridge
-// with a full queue drops the message instead.
-//
-// ai-generated: added for the relay window's marks and echoes (olcrtc#15).
 func trySendEndpointRaw(jSess *j.Session, to string, data []byte) error {
 	br := jSess.Bridge()
 	if br == nil {
@@ -477,16 +467,15 @@ func trySendEndpointRaw(jSess *j.Session, to string, data []byte) error {
 	return nil
 }
 
-// newEndpointMessage wraps data as the JVB relays it to endpoint to.
-//
-// ai-generated: split out of sendEndpointRaw so that trySendEndpointRaw
-// sends the same shape (olcrtc#15).
 func newEndpointMessage(to string, data []byte) endpointMessage {
+	if data == nil {
+		data = []byte{}
+	}
 	return endpointMessage{
 		ColibriClass: colibriClassEndpointMessage,
 		To:           to,
 		MsgPayload: endpointRawPayload{
-			Raw: base64.StdEncoding.EncodeToString(data),
+			Raw: data,
 		},
 	}
 }

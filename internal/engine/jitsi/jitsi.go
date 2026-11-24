@@ -120,6 +120,8 @@ type Session struct {
 	// it. peerWake is buffered(1): "some peer queue has data".
 	peerQueueMu  sync.Mutex
 	peerQueues   map[string]*peerQueue
+	drainPeers   []string
+	drainQueues  []*peerQueue
 	peerWake     chan struct{}
 	bridgeReady  atomic.Bool
 	bridgeGen    atomic.Uint64

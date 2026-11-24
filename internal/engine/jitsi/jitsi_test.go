@@ -95,7 +95,7 @@ func TestSendEndpointRawFieldOrderAndShape(t *testing.T) {
 	msg := endpointMessage{
 		ColibriClass: "EndpointMessage",
 		To:           "abc123",
-		MsgPayload:   endpointRawPayload{Raw: "cGF5bG9hZA=="},
+		MsgPayload:   endpointRawPayload{Raw: []byte("payload")},
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

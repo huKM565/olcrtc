@@ -111,7 +111,7 @@ func (m *relayModel) send(from, to string, frame []byte) error {
 	}
 	msg, err := json.Marshal(endpointMessage{
 		ColibriClass: colibriClassEndpointMessage, To: to,
-		MsgPayload: endpointRawPayload{Raw: base64.StdEncoding.EncodeToString(frame)},
+		MsgPayload: endpointRawPayload{Raw: frame},
 	})
 	if err != nil {
 		return err

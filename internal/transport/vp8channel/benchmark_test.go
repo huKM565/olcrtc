@@ -121,6 +121,47 @@ func BenchmarkRTPReorderFrameAssembly12KiB(b *testing.B) {
 	}
 }
 
+func BenchmarkRTPOrderedFrameAssembly12KiB(b *testing.B) {
+	const rtpPayloadSize = 1200
+	frame := make([]byte, 12*1024)
+	packetCount := (len(frame) + rtpPayloadSize - 1) / rtpPayloadSize
+	packets := make([]rtp.Packet, packetCount)
+	for i := range packets {
+		start := i * rtpPayloadSize
+		end := min(start+rtpPayloadSize, len(frame))
+		packets[i].Payload = make([]byte, 1+end-start)
+		copy(packets[i].Payload[1:], frame[start:end])
+		if i == 0 {
+			packets[i].Payload[0] = 0x10
+		}
+		packets[i].Marker = i == packetCount-1
+	}
+	reorder := newReorderBuffer()
+	var state vp8FrameState
+	var base uint16
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(frame)))
+	b.ReportMetric(float64(packetCount), "rtp_packets/op")
+	for range b.N {
+		for i := range packets {
+			packets[i].SequenceNumber = base + uint16(i)
+		}
+		var assembled []byte
+		for i := range packets {
+			reorder.push(&packets[i], func(ordered *rtp.Packet) {
+				if complete := state.processRTPPacket(ordered); complete != nil {
+					assembled = complete
+				}
+			})
+		}
+		if len(assembled) != len(frame) {
+			b.Fatalf("assembled frame length = %d", len(assembled))
+		}
+		base += uint16(packetCount) //nolint:gosec // RTP sequence wrap is intentional
+	}
+}
+
 func benchmarkReorderOrder(packetCount int) []int {
 	order := make([]int, 0, packetCount)
 	for i := 0; i < packetCount; {

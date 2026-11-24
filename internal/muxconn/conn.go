@@ -211,6 +211,7 @@ type Conn struct {
 	authFailed    atomic.Uint64
 
 	// reordering accounting for the rate-limited log in noteReordering.
+	reorderSeen   atomic.Uint64
 	reorderLogged atomic.Uint64
 	reorderLogAt  atomic.Int64
 
@@ -467,9 +468,18 @@ func (c *Conn) ReorderStats() crypto.ReorderStats {
 // the frame it should have got first. This line is how that report gets its
 // cause: reordering fills its gaps, loss never does.
 func (c *Conn) noteReordering() {
-	stats := c.ReorderStats()
+	entry := c.group.Pinned()
+	if entry == nil {
+		return
+	}
+	events := entry.Keys.ReorderEvents()
+	if events == 0 || events == c.reorderSeen.Load() {
+		return
+	}
+	stats := entry.Keys.ReorderStats(c.aad)
 	total := stats.Skipped + stats.Late
 	if total == 0 || total == c.reorderLogged.Load() {
+		c.reorderSeen.Store(events)
 		return
 	}
 	now := time.Now().UnixNano()
@@ -480,6 +490,7 @@ func (c *Conn) noteReordering() {
 	if !c.reorderLogAt.CompareAndSwap(last, now) {
 		return
 	}
+	c.reorderSeen.Store(events)
 	c.reorderLogged.Store(total)
 	logger.Debugf("muxconn: records out of order on this lane so far: %d skipped, %d arrived late, %d still missing",
 		stats.Skipped, stats.Late, stats.Skipped-min(stats.Late, stats.Skipped))

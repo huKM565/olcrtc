@@ -90,8 +90,12 @@ func (b *reorderBuffer) push(pkt *rtp.Packet, deliver func(*rtp.Packet)) {
 		b.started = true
 		b.nextSeq = pkt.SequenceNumber
 	}
-	// Drop packets older than our current position: already delivered, or
-	// skipped past as lost.
+	if pkt.SequenceNumber == b.nextSeq && len(b.pkts) == 0 {
+		b.nextSeq++
+		b.gapSince = time.Time{}
+		deliver(pkt)
+		return
+	}
 	if seqLess(pkt.SequenceNumber, b.nextSeq) {
 		return
 	}

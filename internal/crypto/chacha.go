@@ -136,9 +136,10 @@ type ReorderStats struct {
 // replayCache holds one window per (lane, sender prefix), bounded by an LRU
 // over all of them.
 type replayCache struct {
-	mu    sync.Mutex
-	lanes map[string]map[[noncePrefixSize]byte]*replayState
-	lru   list.List
+	mu     sync.Mutex
+	lanes  map[string]map[[noncePrefixSize]byte]*replayState
+	lru    list.List
+	events atomic.Uint64
 }
 
 // KeySet owns one sender per lane and the shared receive replay state.
@@ -326,7 +327,10 @@ func (r *replayCache) accept(aad []byte, prefix [noncePrefixSize]byte, counter u
 	}
 	if counter > state.highest {
 		shift := counter - state.highest
-		state.skipped += shift - 1
+		if shift > 1 {
+			state.skipped += shift - 1
+			r.events.Add(shift - 1)
+		}
 		if shift >= replayWindowSize {
 			state.seen = 1
 		} else {
@@ -346,8 +350,14 @@ func (r *replayCache) accept(aad []byte, prefix [noncePrefixSize]byte, counter u
 	}
 	state.seen |= mask
 	state.late++
+	r.events.Add(1)
 	r.lru.MoveToFront(state.element)
 	return nil
+}
+
+// ReorderEvents reports the total number of skipped or late records observed across all lanes.
+func (k *KeySet) ReorderEvents() uint64 {
+	return k.replay.events.Load()
 }
 
 // ReorderStats reports the reordering seen on the lane aad names.

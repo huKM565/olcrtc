@@ -269,7 +269,7 @@ func Run(ctx context.Context, cfg Config) error {
 func (s *Server) serveStats(ctx context.Context, addr string) {
 	statsSrv := &http.Server{
 		Addr:              addr,
-		Handler:           s.meter.statsHandler(s.LinkState),
+		Handler:           statsHTTPHandler(s.meter.statsHandler(s.LinkState), addr),
 		ReadHeaderTimeout: statsReadHeaderTimeout,
 	}
 	go func() {
