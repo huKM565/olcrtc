@@ -29,6 +29,7 @@ type Pipe struct {
 	hasSamples    bool
 	ackedBytes    int64
 	bwWindowStart time.Time
+	stalledUntil  time.Time
 	closed        bool
 }
 
@@ -62,12 +63,13 @@ func (p *Pipe) score(chunkLen int) float64 {
 }
 
 type InFlightFrame struct {
-	ChunkID uint32
-	Frame   Frame
-	PipeID  uint16
-	SentAt  time.Time
-	Retries int
-	Size    int
+	ChunkID     uint32
+	Frame       Frame
+	PipeID      uint16
+	SentAt      time.Time
+	FirstSentAt time.Time
+	Retries     int
+	Size        int
 }
 
 type Scheduler struct {
@@ -200,16 +202,26 @@ func (s *Scheduler) PickPipeExcluding(chunkLen int, excludeID uint16, exclude bo
 func (s *Scheduler) FastestPipe() (*Pipe, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var best *Pipe
+	now := time.Now()
+	var bestHealthy *Pipe
+	var bestAny *Pipe
 	for _, p := range s.pipes {
 		if p.closed {
 			continue
 		}
-		if best == nil || p.ewmaRTT < best.ewmaRTT {
-			best = p
+		if bestAny == nil || p.ewmaRTT < bestAny.ewmaRTT {
+			bestAny = p
+		}
+		if !now.Before(p.stalledUntil) {
+			if bestHealthy == nil || p.ewmaRTT < bestHealthy.ewmaRTT {
+				bestHealthy = p
+			}
 		}
 	}
-	return best, best != nil
+	if bestHealthy != nil {
+		return bestHealthy, true
+	}
+	return bestAny, bestAny != nil
 }
 
 func (s *Scheduler) UpdatePipeRTT(pipeID uint16, rtt time.Duration) {
@@ -241,11 +253,12 @@ func (s *Scheduler) TrackInFlight(chunkID uint32, f Frame, pipeID uint16, now ti
 		}
 	}
 	s.inFlight[chunkID] = &InFlightFrame{
-		ChunkID: chunkID,
-		Frame:   f,
-		PipeID:  pipeID,
-		SentAt:  now,
-		Size:    size,
+		ChunkID:     chunkID,
+		Frame:       f,
+		PipeID:      pipeID,
+		SentAt:      now,
+		FirstSentAt: now,
+		Size:        size,
 	}
 	if p, ok := s.pipes[pipeID]; ok {
 		p.inFlightBytes += int64(size)
@@ -349,6 +362,8 @@ func (s *Scheduler) RescueExpired(now time.Time) []InFlightFrame {
 		if p, ok := s.pipes[item.PipeID]; ok {
 			p.inFlightBytes = max(0, p.inFlightBytes-int64(item.Size))
 			p.capBytes = max(minPipeCapBytes, p.capBytes/2)
+			p.ewmaRTT = max(p.ewmaRTT*2, 500*time.Millisecond)
+			p.stalledUntil = now.Add(3 * time.Second)
 		}
 		delete(s.inFlight, id)
 		item.Retries++

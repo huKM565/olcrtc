@@ -56,6 +56,7 @@ type Server struct {
 	cancel   context.CancelFunc
 	closed   atomic.Bool
 	logf     func(string, ...any)
+	udpSem   chan struct{}
 
 	mu       sync.Mutex
 	sessions map[[16]byte]*serverSession
@@ -96,6 +97,7 @@ func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		logf:     logf,
+		udpSem:   make(chan struct{}, 64),
 		sessions: make(map[[16]byte]*serverSession),
 	}
 	go s.acceptLoop()
@@ -237,7 +239,15 @@ func (s *Server) getOrCreateSession(sid [16]byte) *serverSession {
 		s.handleOpenTCP(ss, st, dst)
 	}
 	sess.onUDP = func(flowID uint32, dst TargetAddr, data []byte) {
-		s.handleUDP(ss, flowID, dst, data)
+		payloadCopy := append([]byte(nil), data...)
+		select {
+		case s.udpSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.udpSem }()
+				s.handleUDP(ss, flowID, dst, payloadCopy)
+			}()
+		default:
+		}
 	}
 	s.sessions[sid] = ss
 	return ss

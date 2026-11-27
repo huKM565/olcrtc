@@ -248,12 +248,15 @@ func (s *Session) handleFrame(pipeID uint16, f Frame) {
 		}
 		if len(s.streams) >= s.maxStreams {
 			s.streamsMu.Unlock()
-			_ = s.sendReliableAsync(Frame{
-				Type:     FrameOpenOK,
-				Flags:    FlagOpenFail,
-				StreamID: f.StreamID,
-				Payload:  EncodeOpenOK(0, "max streams exceeded"),
-			})
+			sid := f.StreamID
+			go func() {
+				_ = s.sendReliableAsync(Frame{
+					Type:     FrameOpenOK,
+					Flags:    FlagOpenFail,
+					StreamID: sid,
+					Payload:  EncodeOpenOK(0, "max streams exceeded"),
+				})
+			}()
 			return
 		}
 		if peerWin == 0 {
@@ -290,6 +293,9 @@ func (s *Session) handleFrame(pipeID uint16, f Frame) {
 		s.streamsMu.RUnlock()
 		if st == nil {
 			s.queueAck(f.ChunkID)
+			if p, ok := s.sched.FastestPipe(); ok && p.Writer != nil {
+				_ = p.Writer.TryEnqueueCtrl(Frame{Type: FrameRst, StreamID: f.StreamID})
+			}
 			return
 		}
 		if st.onData(f.Offset, f.Payload) {
@@ -478,6 +484,17 @@ func (s *Session) requeueFrames(frames []InFlightFrame, deadPipeID uint16) {
 		if s.closed.Load() {
 			return
 		}
+		if s.sched.PipeCount() == 0 {
+			if !item.FirstSentAt.IsZero() && now.Sub(item.FirstSentAt) > zeroPipeStreamWait {
+				s.resetStream(item.Frame.StreamID)
+				continue
+			}
+			if item.Retries > 0 {
+				item.Retries--
+			}
+			s.sched.TrackRetransmit(item, 0, now)
+			continue
+		}
 		if item.Retries > maxChunkRetries {
 			s.resetStream(item.Frame.StreamID)
 			continue
@@ -489,17 +506,14 @@ func (s *Session) requeueFrames(frames []InFlightFrame, deadPipeID uint16) {
 		}
 		p, ok := s.sched.PickPipeExcluding(item.Size, exclID, exclude)
 		if !ok {
-			// Fallback to fastest healthy pipe for high-priority rescue
 			p, ok = s.sched.FastestPipe()
 		}
 		if !ok || p.Writer == nil {
-			// Re-track so next rescue tick retries once a pipe returns
 			s.sched.TrackRetransmit(item, 0, now)
 			continue
 		}
 		s.sched.TrackRetransmit(item, p.ID, now)
 		if err := p.Writer.Enqueue(item.Frame); err != nil {
-			// Pipe died right as we enqueued; let RemovePipe / next rescue tick handle it
 			continue
 		}
 	}
@@ -742,8 +756,9 @@ func (st *muxStream) onData(offset uint64, payload []byte) bool {
 	if st.rb.IsEOF() {
 		st.readEOF = true
 	}
+	eof := st.readEOF
 	st.readMu.Unlock()
-	if len(chunks) > 0 || st.readEOF {
+	if len(chunks) > 0 || eof {
 		st.signalRead()
 	}
 	return true
@@ -952,13 +967,23 @@ func bridgeStreamAndTCP(stream *muxStream, conn net.Conn) {
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
-		_, _ = io.CopyBuffer(stream, conn, buf)
+		_, err := io.CopyBuffer(stream, conn, buf)
+		if err != nil {
+			stream.Reset()
+			_ = conn.Close()
+			return
+		}
 		_ = stream.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
-		_, _ = io.CopyBuffer(conn, stream, buf)
+		_, err := io.CopyBuffer(conn, stream, buf)
+		if err != nil {
+			stream.Reset()
+			_ = conn.Close()
+			return
+		}
 		if tc, ok := conn.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
 		} else {

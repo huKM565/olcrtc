@@ -78,23 +78,16 @@ func StartClient(parent context.Context, cfg ClientConfig) (*Client, error) {
 		cfg.ReadyTimeout = 10 * time.Second
 	}
 
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return nil, fmt.Errorf("bondmux: listen %s: %w", cfg.ListenAddr, err)
-	}
-
 	var sid [16]byte
 	if _, err := io.ReadFull(rand.Reader, sid[:]); err != nil {
-		_ = ln.Close()
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	c := &Client{
 		cfg:       cfg,
 		uuidBytes: uuidBytes,
 		sessionID: sid,
-		ln:        ln,
 		ctx:       ctx,
 		cancel:    cancel,
 		udpFlows:  make(map[uint32]*udpFlow),
@@ -136,6 +129,13 @@ func StartClient(parent context.Context, cfg ClientConfig) (*Client, error) {
 		}
 		return nil, fmt.Errorf("bondmux handshake: timed out waiting for first pipe (%v)", cfg.ReadyTimeout)
 	}
+
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("bondmux: listen %s: %w", cfg.ListenAddr, err)
+	}
+	c.ln = ln
 
 	c.wg.Add(1)
 	go func() {
@@ -186,7 +186,9 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.cancel()
-	_ = c.ln.Close()
+	if c.ln != nil {
+		_ = c.ln.Close()
+	}
 	c.sess.Close()
 	c.udpMu.Lock()
 	for id, f := range c.udpFlows {
@@ -268,6 +270,8 @@ func (c *Client) dialRoomPipe(roomPort int, isRetry bool) (net.Conn, uint16, err
 	if err != nil {
 		return nil, 0, err
 	}
+	stopCancel := context.AfterFunc(c.ctx, func() { _ = conn.Close() })
+	defer stopCancel()
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}

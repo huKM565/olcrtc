@@ -26,6 +26,9 @@ type BondMuxRuntime struct {
 	streamWindow  uint32
 	sessionWindow uint32
 	client        *bondmux.Client
+	starting      bool
+	startCancel   context.CancelFunc
+	stopRequested bool
 	lastError     string
 }
 
@@ -118,7 +121,7 @@ func parsePortsCSV(csv string) ([]int, error) {
 
 func (r *BondMuxRuntime) Start(readyTimeoutMillis int64) error {
 	r.mu.Lock()
-	if r.client != nil && r.client.IsRunning() {
+	if r.starting || (r.client != nil && r.client.IsRunning()) {
 		r.mu.Unlock()
 		return ErrAlreadyRunning
 	}
@@ -158,25 +161,48 @@ func (r *BondMuxRuntime) Start(readyTimeoutMillis int64) error {
 		MaxStreams:    bondmux.DefaultMaxStreamsMobile,
 		ReadyTimeout:  timeout,
 	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	r.starting = true
+	r.stopRequested = false
+	r.startCancel = cancel
 	r.lastError = ""
 	r.mu.Unlock()
 
-	cli, err := bondmux.StartClient(context.Background(), cfg)
+	cli, err := bondmux.StartClient(runCtx, cfg)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err != nil {
-		r.lastError = err.Error()
+	r.starting = false
+	stopped := r.stopRequested
+	if err != nil || stopped {
+		r.startCancel = nil
+		if err != nil {
+			r.lastError = err.Error()
+		}
+		r.mu.Unlock()
+		cancel()
+		if cli != nil {
+			_ = cli.Close()
+		}
+		if stopped {
+			return ErrStoppedBeforeReady
+		}
 		return err
 	}
 	r.client = cli
+	r.mu.Unlock()
 	return nil
 }
 
 func (r *BondMuxRuntime) Stop(_ int64) error {
 	r.mu.Lock()
+	r.stopRequested = true
+	cancel := r.startCancel
+	r.startCancel = nil
 	cli := r.client
 	r.client = nil
 	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if cli == nil {
 		return nil
 	}

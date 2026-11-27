@@ -283,3 +283,35 @@ func TestSchedulerShufflesFastPipesAndAvoidsSlowPipe(t *testing.T) {
 		t.Fatalf("expected dropped chunk 88 on RemovePipe(2), got %+v", dropped)
 	}
 }
+
+func TestReorderSessionCapAppliesInOrder(t *testing.T) {
+	var sessionBytes atomic.Int64
+	sessionBytes.Store(12 << 20)
+	rb := NewReorderBuffer(1<<20, &sessionBytes, 12<<20)
+	defer rb.Close()
+	if _, ok := rb.Push(0, []byte("in-order-over-cap")); ok {
+		t.Fatalf("expected in-order push to be rejected when sessionBytes >= sessionCap")
+	}
+}
+
+func TestFastestPipeAvoidsStalledPipe(t *testing.T) {
+	sched := NewScheduler(rand.New(rand.NewSource(7)))
+	p1 := NewPipe(1)
+	p1.SetStatsForTest(10*time.Millisecond, 10<<20, 0)
+	p2 := NewPipe(2)
+	p2.SetStatsForTest(30*time.Millisecond, 10<<20, 0)
+	sched.RegisterPipe(p1)
+	sched.RegisterPipe(p2)
+
+	t0 := time.Unix(1700000000, 0)
+	sched.TrackInFlight(1, Frame{Type: FrameData, StreamID: 1, ChunkID: 1, Payload: []byte("x")}, 1, t0)
+	// Pipe 1 stalls -> RescueExpired penalizes pipe 1
+	rescued := sched.RescueExpired(t0.Add(600 * time.Millisecond))
+	if len(rescued) != 1 {
+		t.Fatalf("expected 1 rescued frame, got %d", len(rescued))
+	}
+	fp, ok := sched.FastestPipe()
+	if !ok || fp.ID != 2 {
+		t.Fatalf("expected FastestPipe to switch to healthy pipe 2 after pipe 1 stalled, got %v (ok=%v)", fp, ok)
+	}
+}

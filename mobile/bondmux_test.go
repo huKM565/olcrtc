@@ -148,3 +148,58 @@ func TestMobileBondMuxLifecycle(t *testing.T) {
 		t.Fatalf("expected IsRunning=false after Stop")
 	}
 }
+
+func TestMobileBondMuxConcurrentStopDuringStart(t *testing.T) {
+	// Room port that accepts TCP then stalls before handshake so Start blocks
+	stallLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen stall: %v", err)
+	}
+	defer stallLn.Close()
+	go func() {
+		for {
+			c, err := stallLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				time.Sleep(5 * time.Second)
+			}(c)
+		}
+	}()
+
+	freeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	listenPort := freeLn.Addr().(*net.TCPAddr).Port
+	_ = freeLn.Close()
+
+	rt := NewBondMux()
+	rt.SetListenHost("127.0.0.1")
+	rt.SetListenPort(int64(listenPort))
+	rt.SetTarget("127.0.0.1:10000")
+	rt.SetUUID("2b9618c0-76da-4f8d-bf1f-3270d30ff6a3")
+	rt.SetRoomPortsCSV(strconv.Itoa(stallLn.Addr().(*net.TCPAddr).Port))
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- rt.Start(5000) }()
+
+	time.Sleep(150 * time.Millisecond)
+	stopStart := time.Now()
+	if err := rt.Stop(1000); err != nil {
+		t.Fatalf("Stop during Start: %v", err)
+	}
+	select {
+	case err := <-startDone:
+		if err == nil {
+			t.Fatalf("expected Start to fail when stopped concurrently")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Start did not abort promptly after Stop (%v)", time.Since(stopStart))
+	}
+	if rt.IsRunning() {
+		t.Fatalf("expected IsRunning=false after aborted Start")
+	}
+}

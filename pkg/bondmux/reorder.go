@@ -80,6 +80,10 @@ func (rb *ReorderBuffer) Push(offset uint64, data []byte) ([][]byte, bool) {
 		return nil, true
 	}
 
+	if rb.sessionBytes != nil && rb.sessionCap > 0 && rb.sessionBytes.Load()+int64(len(data)) > rb.sessionCap {
+		return nil, false
+	}
+
 	out := [][]byte{append([]byte(nil), data...)}
 	rb.nextOffset += uint64(len(data))
 

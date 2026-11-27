@@ -866,3 +866,60 @@ func TestStartClientFailsFastOnHandshakeReject(t *testing.T) {
 		t.Fatalf("expected auth fail-fast < 2s, took %v", time.Since(start))
 	}
 }
+
+func TestStreamResetClosesBothDirectionsWithoutLeak(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverReadDone := make(chan struct{})
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen target: %v", err)
+	}
+	defer targetLn.Close()
+	go func() {
+		c, err := targetLn.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		defer close(serverReadDone)
+		_, _ = io.Copy(io.Discard, c)
+	}()
+
+	srv, err := StartServer(ctx, ServerConfig{
+		ListenAddr:           "127.0.0.1:0",
+		UUIDs:                []string{testUUID},
+		AllowLoopbackForTest: true,
+	})
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	defer srv.Close()
+
+	r0 := startMockSocksRoom(t, 0)
+	cli, err := StartClient(ctx, ClientConfig{
+		ListenAddr:   "127.0.0.1:0",
+		TargetAddr:   srv.Addr(),
+		UUID:         testUUID,
+		RoomPorts:    []int{r0.port},
+		ReadyTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("StartClient: %v", err)
+	}
+	defer cli.Close()
+
+	targetPort := uint16(targetLn.Addr().(*net.TCPAddr).Port)
+	conn := socks5Connect(t, cli.ListenAddr(), "", "", "127.0.0.1", targetPort, AtypIPv4)
+	_, _ = conn.Write([]byte("hello"))
+	// Abruptly reset client side
+	_ = conn.(*net.TCPConn).SetLinger(0)
+	_ = conn.Close()
+
+	select {
+	case <-serverReadDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("server target socket did not close after abrupt client disconnect")
+	}
+}
