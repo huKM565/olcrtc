@@ -64,6 +64,9 @@ type Session struct {
 	pings    map[uint64]pingEntry
 	pipeLast sync.Map // map[uint16]int64 (unix nano)
 
+	udpPipeMu sync.Mutex
+	udpPipes  map[uint32]uint16
+
 	schedWake chan struct{}
 
 	onOpenTCP func(stream *muxStream, dst TargetAddr)
@@ -110,6 +113,7 @@ func newSession(
 		streams:       make(map[uint32]*muxStream),
 		ackWake:       make(chan struct{}, 1),
 		pings:         make(map[uint64]pingEntry),
+		udpPipes:      make(map[uint32]uint16),
 		schedWake:     make(chan struct{}, 1),
 	}
 	if !isServer {
@@ -512,10 +516,15 @@ func (s *Session) requeueFrames(frames []InFlightFrame, deadPipeID uint16) {
 			s.sched.TrackRetransmit(item, 0, now)
 			continue
 		}
-		s.sched.TrackRetransmit(item, p.ID, now)
-		if err := p.Writer.Enqueue(item.Frame); err != nil {
+		if !p.Writer.TryEnqueue(item.Frame) {
+			if alt, aok := s.sched.PickPipeExcluding(item.Size, p.ID, true); aok && alt.Writer != nil && alt.Writer.TryEnqueue(item.Frame) {
+				s.sched.TrackRetransmit(item, alt.ID, now)
+				continue
+			}
+			s.sched.TrackRetransmit(item, 0, now)
 			continue
 		}
+		s.sched.TrackRetransmit(item, p.ID, now)
 	}
 }
 
@@ -591,6 +600,32 @@ func (s *Session) sendReliableAsync(f Frame) error {
 	return s.sendReliable(ctx, f)
 }
 
+func (s *Session) ForgetUDPFlow(flowID uint32) {
+	s.udpPipeMu.Lock()
+	delete(s.udpPipes, flowID)
+	s.udpPipeMu.Unlock()
+}
+
+func (s *Session) pickUDPPipe(flowID uint32) (*Pipe, bool) {
+	s.udpPipeMu.Lock()
+	prevID := s.udpPipes[flowID]
+	s.udpPipeMu.Unlock()
+
+	p, ok := s.sched.PickUDPPipe(flowID, prevID)
+	if !ok {
+		return nil, false
+	}
+	if p.ID != prevID {
+		s.udpPipeMu.Lock()
+		if len(s.udpPipes) >= 1024 {
+			clear(s.udpPipes)
+		}
+		s.udpPipes[flowID] = p.ID
+		s.udpPipeMu.Unlock()
+	}
+	return p, true
+}
+
 func (s *Session) SendUDP(flowID uint32, dst TargetAddr, data []byte) error {
 	payload, err := EncodeUDPPkt(dst, data)
 	if err != nil {
@@ -601,14 +636,14 @@ func (s *Session) SendUDP(flowID uint32, dst TargetAddr, data []byte) error {
 		StreamID: flowID,
 		Payload:  payload,
 	}
-	p, ok := s.sched.PickPipe(HeaderSize + len(payload))
-	if !ok {
-		p, ok = s.sched.FastestPipe()
-	}
+	p, ok := s.pickUDPPipe(flowID)
 	if !ok || p.Writer == nil {
 		return ErrNoPipes
 	}
-	return p.Writer.Enqueue(f)
+	if !p.Writer.TryEnqueue(f) {
+		return nil
+	}
+	return nil
 }
 
 func (s *Session) OpenTCP(ctx context.Context, dst TargetAddr) (*muxStream, error) {

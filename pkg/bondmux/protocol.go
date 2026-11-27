@@ -307,6 +307,21 @@ func (pw *PipeWriter) Enqueue(f Frame) error {
 	}
 }
 
+func (pw *PipeWriter) TryEnqueue(f Frame) bool {
+	ch := pw.dataCh
+	if f.IsHighPriority() {
+		ch = pw.ctrlCh
+	}
+	select {
+	case <-pw.done:
+		return false
+	case ch <- f:
+		return true
+	default:
+		return false
+	}
+}
+
 func (pw *PipeWriter) TryEnqueueCtrl(f Frame) bool {
 	select {
 	case <-pw.done:

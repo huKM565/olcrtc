@@ -7,8 +7,21 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 )
+
+const (
+	dnsCacheTTL         = 30 * time.Second
+	dnsCacheMaxEntries  = 1024
+	happyEyeballsDelay  = 250 * time.Millisecond
+	maxDialCandidates   = 4
+)
+
+type dnsCacheEntry struct {
+	addrs     []netip.Addr
+	expiresAt time.Time
+}
 
 var (
 	ErrBlockedTarget = errors.New("bondmux: blocked target")
@@ -55,6 +68,8 @@ type egressDialer struct {
 	lookupIP      func(ctx context.Context, host string) ([]netip.Addr, error)
 	dialTCPFn     func(ctx context.Context, addr netip.Addr, port uint16) (net.Conn, error)
 	resolver      *net.Resolver
+	dnsMu         sync.RWMutex
+	dnsCache      map[string]dnsCacheEntry
 }
 
 func newEgressDialer(
@@ -68,6 +83,7 @@ func newEgressDialer(
 		dnsServer:     dnsServer,
 		lookupIP:      lookupIP,
 		dialTCPFn:     dialTCPFn,
+		dnsCache:      make(map[string]dnsCacheEntry),
 	}
 	if dnsServer != "" {
 		d.resolver = &net.Resolver{
@@ -82,12 +98,48 @@ func newEgressDialer(
 	return d
 }
 
+func (d *egressDialer) lookupCached(host string) ([]netip.Addr, bool) {
+	d.dnsMu.RLock()
+	ent, ok := d.dnsCache[host]
+	d.dnsMu.RUnlock()
+	if !ok || time.Now().After(ent.expiresAt) {
+		return nil, false
+	}
+	return ent.addrs, true
+}
+
+func (d *egressDialer) storeCached(host string, addrs []netip.Addr) {
+	now := time.Now()
+	d.dnsMu.Lock()
+	if len(d.dnsCache) >= dnsCacheMaxEntries {
+		for k, v := range d.dnsCache {
+			if now.After(v.expiresAt) {
+				delete(d.dnsCache, k)
+			}
+		}
+		if len(d.dnsCache) >= dnsCacheMaxEntries {
+			for k := range d.dnsCache {
+				delete(d.dnsCache, k)
+				break
+			}
+		}
+	}
+	d.dnsCache[host] = dnsCacheEntry{
+		addrs:     append([]netip.Addr(nil), addrs...),
+		expiresAt: now.Add(dnsCacheTTL),
+	}
+	d.dnsMu.Unlock()
+}
+
 func (d *egressDialer) resolve(ctx context.Context, dst TargetAddr) ([]netip.Addr, error) {
 	if dst.Host == "" || dst.Port == 0 {
 		return nil, ErrInvalidAddr
 	}
 	if ip, err := netip.ParseAddr(dst.Host); err == nil {
 		return d.filter([]netip.Addr{ip})
+	}
+	if cached, ok := d.lookupCached(dst.Host); ok {
+		return cached, nil
 	}
 	var addrs []netip.Addr
 	if d.lookupIP != nil {
@@ -114,19 +166,44 @@ func (d *egressDialer) resolve(ctx context.Context, dst TargetAddr) ([]netip.Add
 	if len(addrs) == 0 {
 		return nil, ErrResolveTarget
 	}
-	return d.filter(addrs)
+	filtered, err := d.filter(addrs)
+	if err != nil {
+		return nil, err
+	}
+	d.storeCached(dst.Host, filtered)
+	return filtered, nil
 }
 
 func (d *egressDialer) filter(addrs []netip.Addr) ([]netip.Addr, error) {
-	out := make([]netip.Addr, len(addrs))
-	for i, a := range addrs {
+	v4 := make([]netip.Addr, 0, len(addrs))
+	v6 := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
 		u := a.Unmap()
 		if isBlockedAddr(u) && !(d.allowLoopback && u.IsLoopback()) {
 			return nil, ErrBlockedTarget
 		}
-		out[i] = u
+		if u.Is4() {
+			v4 = append(v4, u)
+		} else {
+			v6 = append(v6, u)
+		}
 	}
-	return out, nil
+	return append(v4, v6...), nil
+}
+
+func (d *egressDialer) dialOneTCP(ctx context.Context, a netip.Addr, port uint16) (net.Conn, error) {
+	if d.dialTCPFn != nil {
+		return d.dialTCPFn(ctx, a, port)
+	}
+	var nd net.Dialer
+	nd.Timeout = 8 * time.Second
+	c, err := nd.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(int(port))))
+	if err == nil {
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+		}
+	}
+	return c, err
 }
 
 func (d *egressDialer) dialTCP(ctx context.Context, dst TargetAddr) (net.Conn, error) {
@@ -134,31 +211,104 @@ func (d *egressDialer) dialTCP(ctx context.Context, dst TargetAddr) (net.Conn, e
 	if err != nil {
 		return nil, err
 	}
-	var lastErr error
-	for _, a := range addrs {
-		if d.dialTCPFn != nil {
-			c, err := d.dialTCPFn(ctx, a, dst.Port)
+	if len(addrs) == 1 {
+		return d.dialOneTCP(ctx, addrs[0], dst.Port)
+	}
+	if len(addrs) > maxDialCandidates {
+		addrs = addrs[:maxDialCandidates]
+	}
+
+	dialCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	resCh := make(chan dialResult, len(addrs))
+	launch := func(a netip.Addr) {
+		go func() {
+			c, err := d.dialOneTCP(dialCtx, a, dst.Port)
 			if err == nil {
-				return c, nil
+				select {
+				case resCh <- dialResult{conn: c}:
+				case <-dialCtx.Done():
+					_ = c.Close()
+				}
+				return
 			}
-			lastErr = err
-			continue
-		}
-		var nd net.Dialer
-		nd.Timeout = 10 * time.Second
-		c, err := nd.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(int(dst.Port))))
-		if err == nil {
-			if tc, ok := c.(*net.TCPConn); ok {
-				_ = tc.SetNoDelay(true)
+			resCh <- dialResult{err: err}
+		}()
+	}
+
+	launched := 0
+	completed := 0
+	var lastErr error
+	launch(addrs[launched])
+	launched++
+
+	stagger := time.NewTimer(happyEyeballsDelay)
+	defer stagger.Stop()
+
+	for completed < len(addrs) {
+		if launched < len(addrs) {
+			select {
+			case r := <-resCh:
+				completed++
+				if r.err == nil {
+					cancel()
+					return r.conn, nil
+				}
+				lastErr = r.err
+				launch(addrs[launched])
+				launched++
+				stagger.Reset(happyEyeballsDelay)
+			case <-stagger.C:
+				launch(addrs[launched])
+				launched++
+				if launched < len(addrs) {
+					stagger.Reset(happyEyeballsDelay)
+				}
+			case <-ctx.Done():
+				cancel()
+				return nil, ctx.Err()
 			}
-			return c, nil
+		} else {
+			select {
+			case r := <-resCh:
+				completed++
+				if r.err == nil {
+					cancel()
+					return r.conn, nil
+				}
+				lastErr = r.err
+			case <-ctx.Done():
+				cancel()
+				return nil, ctx.Err()
+			}
 		}
-		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = ErrResolveTarget
 	}
 	return nil, lastErr
+}
+
+func (d *egressDialer) resolveUDPFast(dst TargetAddr) (*net.UDPAddr, bool) {
+	if dst.Host == "" || dst.Port == 0 {
+		return nil, false
+	}
+	if ip, err := netip.ParseAddr(dst.Host); err == nil {
+		filtered, err := d.filter([]netip.Addr{ip})
+		if err != nil || len(filtered) == 0 {
+			return nil, false
+		}
+		return &net.UDPAddr{IP: filtered[0].AsSlice(), Port: int(dst.Port)}, true
+	}
+	if cached, ok := d.lookupCached(dst.Host); ok && len(cached) > 0 {
+		return &net.UDPAddr{IP: cached[0].AsSlice(), Port: int(dst.Port)}, true
+	}
+	return nil, false
 }
 
 func (d *egressDialer) resolveUDP(ctx context.Context, dst TargetAddr) (*net.UDPAddr, error) {

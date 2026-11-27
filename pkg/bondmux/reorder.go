@@ -80,7 +80,7 @@ func (rb *ReorderBuffer) Push(offset uint64, data []byte) ([][]byte, bool) {
 		return nil, true
 	}
 
-	if rb.sessionBytes != nil && rb.sessionCap > 0 && rb.sessionBytes.Load()+int64(len(data)) > rb.sessionCap {
+	if len(rb.chunks) == 0 && rb.sessionBytes != nil && rb.sessionCap > 0 && rb.sessionBytes.Load()+int64(len(data)) > rb.sessionCap {
 		return nil, false
 	}
 

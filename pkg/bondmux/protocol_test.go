@@ -3,9 +3,11 @@ package bondmux
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"math/rand"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -313,5 +315,122 @@ func TestFastestPipeAvoidsStalledPipe(t *testing.T) {
 	fp, ok := sched.FastestPipe()
 	if !ok || fp.ID != 2 {
 		t.Fatalf("expected FastestPipe to switch to healthy pipe 2 after pipe 1 stalled, got %v (ok=%v)", fp, ok)
+	}
+}
+
+func TestReorderInOrderUnblocksWhenOverSessionCap(t *testing.T) {
+	var sessionBytes atomic.Int64
+	rb := NewReorderBuffer(1<<20, &sessionBytes, 16384)
+	defer rb.Close()
+
+	// Buffer an out-of-order chunk at 8192 and fill sessionBytes to cap.
+	if out, ok := rb.Push(8192, bytes.Repeat([]byte{'B'}, 8192)); !ok || len(out) != 0 {
+		t.Fatalf("out-of-order push failed: ok=%v len=%d", ok, len(out))
+	}
+	sessionBytes.Store(16384)
+
+	// Missing in-order chunk at 0 must still be accepted to drain stuck chunks.
+	out, ok := rb.Push(0, bytes.Repeat([]byte{'A'}, 8192))
+	if !ok || len(out) != 2 {
+		t.Fatalf("expected in-order push to unblock buffered chunk, ok=%v len=%d", ok, len(out))
+	}
+	if rb.BufferedBytes() != 0 {
+		t.Fatalf("expected buffered bytes=0 after drain, got %d", rb.BufferedBytes())
+	}
+}
+
+func TestSchedulerRescuePenalizesOncePerTickAndCapsRTT(t *testing.T) {
+	sched := NewScheduler(rand.New(rand.NewSource(9)))
+	p1 := NewPipe(1)
+	p1.SetStatsForTest(50*time.Millisecond, 10<<20, 0)
+	sched.RegisterPipe(p1)
+
+	t0 := time.Unix(1700000000, 0)
+	for i := uint32(1); i <= 10; i++ {
+		sched.TrackInFlight(i, Frame{Type: FrameData, StreamID: 1, ChunkID: i, Payload: []byte("x")}, 1, t0)
+	}
+	rescued := sched.RescueExpired(t0.Add(600 * time.Millisecond))
+	if len(rescued) != 10 {
+		t.Fatalf("expected 10 rescued frames, got %d", len(rescued))
+	}
+	if p1.ewmaRTT != 500*time.Millisecond {
+		t.Fatalf("expected single penalty ewmaRTT=500ms, got %v", p1.ewmaRTT)
+	}
+}
+
+func TestSchedulerPickUDPPipePinsFlowAndFailsOver(t *testing.T) {
+	sched := NewScheduler(rand.New(rand.NewSource(11)))
+	p1 := NewPipe(1)
+	p1.SetStatsForTest(20*time.Millisecond, 5<<20, 0)
+	p2 := NewPipe(2)
+	p2.SetStatsForTest(25*time.Millisecond, 5<<20, 0)
+	sched.RegisterPipe(p1)
+	sched.RegisterPipe(p2)
+
+	first, ok := sched.PickUDPPipe(42, 0)
+	if !ok {
+		t.Fatalf("PickUDPPipe returned false")
+	}
+	for i := 0; i < 20; i++ {
+		next, ok := sched.PickUDPPipe(42, first.ID)
+		if !ok || next.ID != first.ID {
+			t.Fatalf("expected flow 42 pinned to pipe %d, got %v", first.ID, next)
+		}
+	}
+	// Stall pinned pipe -> must fail over to the other healthy pipe
+	first.stalledUntil = time.Now().Add(3 * time.Second)
+	other, ok := sched.PickUDPPipe(42, first.ID)
+	if !ok || other.ID == first.ID {
+		t.Fatalf("expected failover away from stalled pipe %d, got %v", first.ID, other)
+	}
+}
+
+func TestEgressHappyEyeballsPrefersIPv4AndCachesDNS(t *testing.T) {
+	var lookups atomic.Int32
+	v6Dead := netip.MustParseAddr("2606:4700:4700::1111")
+	v4Slow := netip.MustParseAddr("1.1.1.1")
+	v4Fast := netip.MustParseAddr("8.8.8.8")
+
+	var firstDialed atomic.Value
+	dialer := newEgressDialer(
+		"",
+		false,
+		func(ctx context.Context, host string) ([]netip.Addr, error) {
+			lookups.Add(1)
+			return []netip.Addr{v6Dead, v4Slow, v4Fast}, nil
+		},
+		func(ctx context.Context, addr netip.Addr, port uint16) (net.Conn, error) {
+			firstDialed.CompareAndSwap(nil, addr)
+			if addr == v4Slow {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			c1, c2 := net.Pipe()
+			_ = c2.Close()
+			return c1, nil
+		},
+	)
+
+	dst := TargetAddr{Atyp: AtypDomain, Host: "video.example.com", Port: 443}
+	start := time.Now()
+	conn, err := dialer.dialTCP(context.Background(), dst)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("dialTCP failed: %v", err)
+	}
+	_ = conn.Close()
+	if got := firstDialed.Load().(netip.Addr); got != v4Slow {
+		t.Fatalf("expected IPv4 %v tried before IPv6 %v, got %v", v4Slow, v6Dead, got)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected Happy Eyeballs failover < 2s, took %v", elapsed)
+	}
+	// Second resolve and resolveUDPFast must hit DNS cache without calling LookupIP again.
+	uaddr, ok := dialer.resolveUDPFast(dst)
+	if !ok || uaddr.IP.String() != "1.1.1.1" {
+		t.Fatalf("expected cached IPv4 1.1.1.1 from resolveUDPFast, got %v ok=%v", uaddr, ok)
+	}
+	if lookups.Load() != 1 {
+		t.Fatalf("expected 1 DNS lookup with caching, got %d", lookups.Load())
 	}
 }

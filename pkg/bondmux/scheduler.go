@@ -8,14 +8,16 @@ import (
 )
 
 const (
-	initialPipeCapBytes int64 = 256 << 10
-	maxPipeCapBytes     int64 = 1 << 20
-	minPipeCapBytes     int64 = 64 << 10
-	initialEstBW              = 2.0 * (1 << 20)
+	initialPipeCapBytes int64 = 96 << 10
+	maxPipeCapBytes     int64 = 512 << 10
+	minPipeCapBytes     int64 = 48 << 10
+	initialEstBW              = 512.0 * 1024
 	minEstBW                  = 64.0 * 1024
 	initialRTT                = 80 * time.Millisecond
+	maxPipeRTT                = 2 * time.Second
 	minRescueTimeout          = 450 * time.Millisecond
-	maxChunkRetries           = 5
+	maxRescueTimeout          = 3 * time.Second
+	maxChunkRetries           = 8
 	scoreSpreadFactor         = 1.5
 )
 
@@ -224,6 +226,59 @@ func (s *Scheduler) FastestPipe() (*Pipe, bool) {
 	return bestAny, bestAny != nil
 }
 
+func (s *Scheduler) PickUDPPipe(flowID uint32, prevPipeID uint16) (*Pipe, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if prevPipeID != 0 {
+		if p, ok := s.pipes[prevPipeID]; ok && !p.closed && !now.Before(p.stalledUntil) {
+			return p, true
+		}
+	}
+	var healthy []*Pipe
+	var all []*Pipe
+	for _, p := range s.pipes {
+		if p.closed {
+			continue
+		}
+		all = append(all, p)
+		if !now.Before(p.stalledUntil) {
+			healthy = append(healthy, p)
+		}
+	}
+	pool := healthy
+	if len(pool) == 0 {
+		pool = all
+	}
+	if len(pool) == 0 {
+		return nil, false
+	}
+	slices.SortFunc(pool, func(a, b *Pipe) int {
+		if a.ewmaRTT < b.ewmaRTT {
+			return -1
+		}
+		if a.ewmaRTT > b.ewmaRTT {
+			return 1
+		}
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	bestRTT := pool[0].ewmaRTT
+	limit := max(time.Duration(float64(bestRTT)*1.3), bestRTT+20*time.Millisecond)
+	candidates := pool[:1]
+	for _, p := range pool[1:] {
+		if p.ewmaRTT <= limit {
+			candidates = append(candidates, p)
+		}
+	}
+	return candidates[int(flowID)%len(candidates)], true
+}
+
 func (s *Scheduler) UpdatePipeRTT(pipeID uint16, rtt time.Duration) {
 	if rtt <= 0 {
 		return
@@ -289,13 +344,14 @@ func (s *Scheduler) OnAck(chunkID uint32, now time.Time) bool {
 		return true
 	}
 	p.inFlightBytes = max(0, p.inFlightBytes-int64(item.Size))
+	p.stalledUntil = time.Time{}
 	rtt := now.Sub(item.SentAt)
 	if rtt > 0 && item.Retries == 0 {
 		if !p.hasSamples {
-			p.ewmaRTT = rtt
+			p.ewmaRTT = min(rtt, maxPipeRTT)
 			p.hasSamples = true
 		} else {
-			p.ewmaRTT = (p.ewmaRTT*7 + rtt) / 8
+			p.ewmaRTT = min((p.ewmaRTT*7+rtt)/8, maxPipeRTT)
 		}
 	}
 	p.ackedBytes += int64(item.Size)
@@ -314,7 +370,7 @@ func (s *Scheduler) OnAck(chunkID uint32, now time.Time) bool {
 }
 
 func (s *Scheduler) adaptCapLocked(p *Pipe) {
-	bdp := int64(p.estBW * p.ewmaRTT.Seconds() * 2)
+	bdp := int64(p.estBW * p.ewmaRTT.Seconds() * 1.5)
 	if bdp < minPipeCapBytes {
 		bdp = minPipeCapBytes
 	}
@@ -353,21 +409,39 @@ func (s *Scheduler) medianRTTLocked() time.Duration {
 func (s *Scheduler) RescueExpired(now time.Time) []InFlightFrame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	timeout := max(3*s.medianRTTLocked(), minRescueTimeout)
+	baseTimeout := max(3*s.medianRTTLocked(), minRescueTimeout)
 	var expired []InFlightFrame
+	penalized := make(map[uint16]bool)
 	for id, item := range s.inFlight {
+		timeout := baseTimeout
+		if p, ok := s.pipes[item.PipeID]; ok && p.inFlightBytes > 0 {
+			bw := p.estBW
+			if bw < minEstBW {
+				bw = minEstBW
+			}
+			drain := time.Duration(float64(p.inFlightBytes) / bw * float64(time.Second))
+			pipeExpected := p.ewmaRTT + drain
+			if p.hasSamples || p.inFlightBytes >= minPipeCapBytes {
+				timeout = max(timeout, min(2*pipeExpected, maxRescueTimeout))
+			}
+		}
 		if now.Sub(item.SentAt) < timeout {
 			continue
 		}
 		if p, ok := s.pipes[item.PipeID]; ok {
 			p.inFlightBytes = max(0, p.inFlightBytes-int64(item.Size))
-			p.capBytes = max(minPipeCapBytes, p.capBytes/2)
-			p.ewmaRTT = max(p.ewmaRTT*2, 500*time.Millisecond)
-			p.stalledUntil = now.Add(3 * time.Second)
+			penalized[item.PipeID] = true
 		}
 		delete(s.inFlight, id)
 		item.Retries++
 		expired = append(expired, *item)
+	}
+	for pid := range penalized {
+		if p, ok := s.pipes[pid]; ok {
+			p.capBytes = max(minPipeCapBytes, p.capBytes/2)
+			p.ewmaRTT = min(max(p.ewmaRTT*2, 500*time.Millisecond), maxPipeRTT)
+			p.stalledUntil = now.Add(3 * time.Second)
+		}
 	}
 	return expired
 }

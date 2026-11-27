@@ -97,7 +97,7 @@ func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		logf:     logf,
-		udpSem:   make(chan struct{}, 64),
+		udpSem:   make(chan struct{}, 256),
 		sessions: make(map[[16]byte]*serverSession),
 	}
 	go s.acceptLoop()
@@ -239,6 +239,10 @@ func (s *Server) getOrCreateSession(sid [16]byte) *serverSession {
 		s.handleOpenTCP(ss, st, dst)
 	}
 	sess.onUDP = func(flowID uint32, dst TargetAddr, data []byte) {
+		if udpAddr, ok := s.egress.resolveUDPFast(dst); ok {
+			s.writeServerUDP(ss, flowID, udpAddr, data)
+			return
+		}
 		payloadCopy := append([]byte(nil), data...)
 		select {
 		case s.udpSem <- struct{}{}:
@@ -305,7 +309,10 @@ func (s *Server) handleUDP(ss *serverSession, flowID uint32, dst TargetAddr, dat
 	if err != nil {
 		return
 	}
+	s.writeServerUDP(ss, flowID, udpAddr, data)
+}
 
+func (s *Server) writeServerUDP(ss *serverSession, flowID uint32, udpAddr *net.UDPAddr, data []byte) {
 	ss.udpMu.Lock()
 	sock := ss.udpSockets[flowID]
 	if sock == nil {
@@ -329,6 +336,7 @@ func (s *Server) handleUDP(ss *serverSession, flowID uint32, dst TargetAddr, dat
 func (s *Server) readServerUDP(ss *serverSession, flowID uint32, sock *serverUDPSock) {
 	defer func() {
 		_ = sock.conn.Close()
+		ss.sess.ForgetUDPFlow(flowID)
 		ss.udpMu.Lock()
 		if cur, ok := ss.udpSockets[flowID]; ok && cur == sock {
 			delete(ss.udpSockets, flowID)

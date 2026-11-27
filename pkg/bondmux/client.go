@@ -543,6 +543,7 @@ func (c *Client) handleSocksUDP(ctrl net.Conn) {
 	c.udpFlows[flowID] = fl
 	c.udpMu.Unlock()
 	defer func() {
+		c.sess.ForgetUDPFlow(flowID)
 		c.udpMu.Lock()
 		delete(c.udpFlows, flowID)
 		c.udpMu.Unlock()
