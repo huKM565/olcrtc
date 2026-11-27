@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,29 @@ import (
 const reconnectGrace = 20 * time.Second
 
 var fallbackEpoch atomic.Uint32 //nolint:gochecknoglobals // crypto/rand fallback counter
+
+var bridgeFramePool = sync.Pool{ //nolint:gochecknoglobals // shared outbound bridge frame pool
+	New: func() any {
+		b := make([]byte, 0, bridgeMaxMessageSize)
+		return &b
+	},
+}
+
+func acquireBridgeFrame(size int) []byte {
+	bp, ok := bridgeFramePool.Get().(*[]byte)
+	if !ok || cap(*bp) < size {
+		return make([]byte, size, max(size, bridgeMaxMessageSize))
+	}
+	return (*bp)[:size]
+}
+
+func releaseBridgeFrame(buf []byte) {
+	if cap(buf) != bridgeMaxMessageSize {
+		return
+	}
+	b := buf[:0]
+	bridgeFramePool.Put(&b)
+}
 
 func randomEpoch() uint32 {
 	var b [4]byte
@@ -35,10 +59,11 @@ func randomEpoch() uint32 {
 
 func (s *Session) encodeBridgeFrame(data []byte, peerID string) ([]byte, error) {
 	const epochHeaderLen = 8
-	if len(data)+len(bridgeMagic)+epochHeaderLen > bridgeMaxMessageSize {
+	total := len(bridgeMagic) + epochHeaderLen + len(data)
+	if total > bridgeMaxMessageSize {
 		return nil, ErrSendTooLarge
 	}
-	framed := make([]byte, len(bridgeMagic)+epochHeaderLen+len(data))
+	framed := acquireBridgeFrame(total)
 	copy(framed, bridgeMagic[:])
 	off := len(bridgeMagic)
 	binary.BigEndian.PutUint32(framed[off:off+4], s.localEpoch.Load())

@@ -221,7 +221,8 @@ type Conn struct {
 
 	// batch gathers small frames into shared records when the link asks for
 	// a write interval; nil sends every Write as its own record.
-	batch *batcher
+	batch      *batcher
+	copiesSend bool
 }
 
 func (c *Conn) sendDeadline() time.Duration {
@@ -239,15 +240,17 @@ func New(ln transport.Transport, keys *crypto.KeySet) *Conn {
 
 // NewGrouped is New with an explicit pin group (multi-key server paths).
 func NewGrouped(ln transport.Transport, g *PinGroup) *Conn {
+	features := ln.Features()
 	c := &Conn{
-		ln:      ln,
-		send:    ln.Send,
-		group:   g,
-		aad:     []byte(dataRecordAAD),
-		in:      make(chan *[]byte, inboundQueue),
-		closeCh: make(chan struct{}),
+		ln:         ln,
+		send:       ln.Send,
+		group:      g,
+		aad:        []byte(dataRecordAAD),
+		in:         make(chan *[]byte, inboundQueue),
+		closeCh:    make(chan struct{}),
+		copiesSend: features.CopiesSend,
 	}
-	c.startBatching(ln.Features())
+	c.startBatching(features)
 	return c
 }
 
@@ -284,17 +287,19 @@ func NewPeer(ln transport.PeerTransport, keys *crypto.KeySet, peerID string) *Co
 
 // NewPeerGrouped is NewPeer with an explicit pin group.
 func NewPeerGrouped(ln transport.PeerTransport, g *PinGroup, peerID string) *Conn {
+	features := ln.Features()
 	c := &Conn{
 		ln: ln,
 		send: func(data []byte) error {
 			return ln.SendTo(peerID, data)
 		},
-		group:   g,
-		aad:     []byte(dataRecordAAD),
-		in:      make(chan *[]byte, inboundQueue),
-		closeCh: make(chan struct{}),
+		group:      g,
+		aad:        []byte(dataRecordAAD),
+		in:         make(chan *[]byte, inboundQueue),
+		closeCh:    make(chan struct{}),
+		copiesSend: features.CopiesSend,
 	}
-	c.startBatching(ln.Features())
+	c.startBatching(features)
 	return c
 }
 
@@ -743,6 +748,23 @@ func (c *Conn) writeRecord(p []byte) (int, error) {
 	if err := c.awaitLink(); err != nil {
 		return 0, err
 	}
+	if c.copiesSend {
+		bufPtr := acquireFrameBuf()
+		enc, err := c.group.Pinned().Keys.SealInto(*bufPtr, p, c.aad)
+		if err != nil {
+			*bufPtr = (*bufPtr)[:0]
+			releaseFrameBuf(bufPtr)
+			return 0, fmt.Errorf("encrypt: %w", err)
+		}
+		*bufPtr = enc
+		sendErr := c.send(enc)
+		*bufPtr = enc[:0]
+		releaseFrameBuf(bufPtr)
+		if sendErr != nil {
+			return 0, fmt.Errorf("send: %w", sendErr)
+		}
+		return len(p), nil
+	}
 	enc, err := c.group.Pinned().Keys.SealInto(nil, p, c.aad)
 	if err != nil {
 		return 0, fmt.Errorf("encrypt: %w", err)
@@ -789,7 +811,7 @@ func (c *Conn) awaitLink() error {
 // congested link falls through to the polling loop.
 func (c *Conn) waitSendReady() error {
 	const (
-		fastSpinAttempts = 16
+		fastSpinAttempts = 4
 		slowPollDelay    = 2 * time.Millisecond
 	)
 	canSend := c.canSend
@@ -806,10 +828,9 @@ func (c *Conn) waitSendReady() error {
 		runtime.Gosched()
 	}
 
-	deadline := time.NewTimer(c.sendDeadline())
-	defer deadline.Stop()
-	ticker := time.NewTicker(slowPollDelay)
-	defer ticker.Stop()
+	deadlineAt := time.Now().Add(c.sendDeadline())
+	pollTimer := time.NewTimer(slowPollDelay)
+	defer pollTimer.Stop()
 	for {
 		if c.closed.Load() {
 			return ErrClosed
@@ -817,12 +838,22 @@ func (c *Conn) waitSendReady() error {
 		if canSend() {
 			return nil
 		}
+		remaining := time.Until(deadlineAt)
+		if remaining <= 0 {
+			return ErrWriteTimeout
+		}
+		wait := min(slowPollDelay, remaining)
+		if !pollTimer.Stop() {
+			select {
+			case <-pollTimer.C:
+			default:
+			}
+		}
+		pollTimer.Reset(wait)
 		select {
 		case <-c.closeCh:
 			return ErrClosed
-		case <-deadline.C:
-			return ErrWriteTimeout
-		case <-ticker.C:
+		case <-pollTimer.C:
 		}
 	}
 }

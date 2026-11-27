@@ -94,6 +94,16 @@ func runWithArgs(args []string) error {
 	installStderrFilter()
 	session.RegisterDefaults()
 
+	if len(args) >= 3 && args[0] == "-pool" {
+		return runPool(args[1], args[2:])
+	}
+	if len(args) == 2 && args[0] == "-bondmux-client" {
+		return runBondMuxClientCmd(args[1])
+	}
+	if len(args) == 2 && args[0] == "-bondmux-server" {
+		return runBondMuxServerCmd(args[1])
+	}
+
 	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" || args[0] == "-help" {
 		return ErrConfigPathRequired
 	}

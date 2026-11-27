@@ -54,6 +54,7 @@ type Features struct {
 	//
 	// ai-generated: this field (olcrtc#11).
 	WriteInterval time.Duration
+	CopiesSend    bool
 }
 
 // ErrDatagramUnsupported is returned when a transport cannot send lossy datagrams.

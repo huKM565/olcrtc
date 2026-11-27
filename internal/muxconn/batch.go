@@ -156,19 +156,27 @@ func (b *batcher) due() bool {
 
 // waitTurn holds the flusher until an interval has passed since the last
 // record or the batch is due. It reports false once the conn closes.
-func (b *batcher) waitTurn(last time.Time, closed <-chan struct{}) bool {
+func (b *batcher) waitTurn(last time.Time, timer **time.Timer, closed <-chan struct{}) bool {
 	for {
 		wait := b.interval - time.Since(last)
 		if wait <= 0 || b.due() {
 			return true
 		}
-		timer := time.NewTimer(wait)
+		if *timer == nil {
+			*timer = time.NewTimer(wait)
+		} else {
+			if !(*timer).Stop() {
+				select {
+				case <-(*timer).C:
+				default:
+				}
+			}
+			(*timer).Reset(wait)
+		}
 		select {
-		case <-timer.C:
+		case <-(*timer).C:
 		case <-b.kick:
-			timer.Stop()
 		case <-closed:
-			timer.Stop()
 			return false
 		}
 	}
@@ -225,13 +233,19 @@ func (c *Conn) startBatching(features transport.Features) {
 func (c *Conn) flushLoop() {
 	b := c.batch
 	var last time.Time
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		select {
 		case <-b.kick:
 		case <-c.closeCh:
 			return
 		}
-		if !b.waitTurn(last, c.closeCh) {
+		if !b.waitTurn(last, &timer, c.closeCh) {
 			return
 		}
 		record := b.take()

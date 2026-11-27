@@ -48,3 +48,20 @@ func BenchmarkDecodeRaw12KiB(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkDecodeRawJSON12KiB(b *testing.B) {
+	payload := make([]byte, 12*1024)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	rawJSON := []byte(`{"colibriClass":"EndpointMessage","from":"abc12345","msgPayload":{"raw":"` +
+		base64.StdEncoding.EncodeToString(payload) + `"}}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	for range b.N {
+		from, out, ok := decodeRawJSON(rawJSON)
+		if !ok || from != "abc12345" || len(out) != len(payload) {
+			b.Fatalf("decodeRawJSON failed: ok=%v from=%q len=%d", ok, from, len(out))
+		}
+	}
+}

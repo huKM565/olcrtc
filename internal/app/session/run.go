@@ -175,6 +175,8 @@ func runClient(
 		Liveness: liveness, Traffic: traffic,
 		UDPDisabled: cfg.UDPDisabled, UDPMaxFlows: cfg.UDPMaxFlows, Direct: direct,
 		EndOnEmptyRoom: cfg.EndOnEmptyRoom,
+		OnRoomState:    cfg.OnRoomState,
+		OnOccupancy:    cfg.OnOccupancy,
 	})
 	if err != nil {
 		return fmt.Errorf("client: %w", err)

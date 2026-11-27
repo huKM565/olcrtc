@@ -4,6 +4,7 @@ package session
 import (
 	"errors"
 
+	"github.com/openlibrecommunity/olcrtc/internal/client"
 	enginebuiltin "github.com/openlibrecommunity/olcrtc/internal/engine/builtin"
 	"github.com/openlibrecommunity/olcrtc/internal/protect"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
@@ -200,7 +201,9 @@ type Config struct {
 	// for a crypto.keys_file, and nothing else does.
 	//
 	// ai-generated: the field (reload of crypto.keys_file on SIGHUP).
-	KeyReload *server.KeyReload
+	KeyReload   *server.KeyReload
+	OnRoomState func(client.RoomState)
+	OnOccupancy func(int)
 }
 
 // RegisterDefaults registers built-in providers and transports.

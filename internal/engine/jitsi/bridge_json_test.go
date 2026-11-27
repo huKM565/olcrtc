@@ -80,3 +80,36 @@ func TestDecodeRawAcceptsCurrentAndLegacy(t *testing.T) {
 		t.Fatalf("invalid decodeRaw = %q, want nil", got)
 	}
 }
+
+func TestDecodeRawJSON(t *testing.T) {
+	t.Parallel()
+	raw := []byte("hello-fast-path")
+	enc := base64.StdEncoding.EncodeToString(raw)
+
+	from, got, ok := decodeRawJSON([]byte(`{"colibriClass":"EndpointMessage","from":"peer-1","to":"me","msgPayload":{"raw":"` + enc + `"}}`))
+	if !ok || from != "peer-1" || !bytes.Equal(got, raw) {
+		t.Fatalf("msgPayload decodeRawJSON = (%q, %q, %v), want (%q, %q, true)", from, got, ok, "peer-1", raw)
+	}
+
+	from, got, ok = decodeRawJSON([]byte(`{ "from" : "peer-2" , "raw" : "` + enc + `" , "colibriClass" : "EndpointMessage" }`))
+	if !ok || from != "peer-2" || !bytes.Equal(got, raw) {
+		t.Fatalf("legacy decodeRawJSON = (%q, %q, %v), want (%q, %q, true)", from, got, ok, "peer-2", raw)
+	}
+
+	from, got, ok = decodeRawJSON([]byte(`{"colibriClass":"EndpointMessage","from":"a\"b\\c","msgPayload":{"raw":"` + enc + `"}}`))
+	if !ok || from != `a"b\c` || !bytes.Equal(got, raw) {
+		t.Fatalf("escaped from decodeRawJSON = (%q, %q, %v), want (%q, %q, true)", from, got, ok, `a"b\c`, raw)
+	}
+
+	for _, nonData := range [][]byte{
+		[]byte(`{"colibriClass":"ServerHello"}`),
+		[]byte(`{"colibriClass":"DominantSpeakerEndpointChangeEvent","dominantSpeakerEndpoint":"p1"}`),
+		[]byte(`not-json`),
+		[]byte(`{"colibriClass":"EndpointMessage","from":"p1","msgPayload":{"raw":"%%%bad%%%"}}`),
+		[]byte(`{"colibriClass":"EndpointMessage","from":"p1","msgPayload":{"other":1}}`),
+	} {
+		if _, _, ok := decodeRawJSON(nonData); ok {
+			t.Fatalf("decodeRawJSON(%s) = ok, want false", nonData)
+		}
+	}
+}

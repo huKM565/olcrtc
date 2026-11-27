@@ -212,6 +212,16 @@ func (p *streamTransport) WaitForPeer(ctx context.Context) error {
 func (p *streamTransport) Features() transport.Features {
 	_, datagram := p.session.(engine.DatagramSession)
 	return p.shaper.Features(transport.Features{
-		MaxPayloadSize: defaultMaxPayloadSize, Datagram: datagram, WriteInterval: writeInterval,
+		MaxPayloadSize: defaultMaxPayloadSize,
+		Datagram:       datagram,
+		WriteInterval:  writeInterval,
+		CopiesSend:     sessionCopiesSend(p.session),
 	})
+}
+
+func sessionCopiesSend(sess engine.Session) bool {
+	if cs, ok := sess.(interface{ CopiesSend() bool }); ok {
+		return cs.CopiesSend()
+	}
+	return false
 }

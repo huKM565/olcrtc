@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -72,6 +73,9 @@ func (s *Session) openBridge(
 	s.peerVideoSSRC.Store(0)
 	s.markBridgeReady()
 	s.requestPeerVideo(ctx, jSess)
+	if br := jSess.Bridge(); br != nil {
+		br.EnableRawMode()
+	}
 	logger.Infof("jitsi: bridge open %s (endpoints=%v)", transport, endpointList(jSess))
 	return nil
 }
@@ -339,7 +343,12 @@ func (s *Session) reapPeerQueues() {
 	}
 }
 
+func (s *Session) CopiesSend() bool { return true }
+
 func (s *Session) sendBridgeFrame(to string, data []byte) {
+	if s.sendHook == nil {
+		defer releaseBridgeFrame(data)
+	}
 	if !s.outboundFrameCurrent(data) {
 		return
 	}
@@ -555,13 +564,37 @@ func (s *Session) recvLoop() {
 		logger.Debugf("jitsi: recvLoop: BridgeMessages() returned nil, exiting")
 		return
 	}
+	br := jSess.Bridge()
+	var rawMsgs <-chan []byte
+	if br != nil {
+		rawMsgs = br.RawFrames()
+	}
 	logger.Debugf("jitsi: recvLoop started")
+drainLoop:
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !s.deliverBridgeMessageGen(gen, msg, ok) {
+				return
+			}
+		default:
+			break drainLoop
+		}
+	}
 	for {
 		select {
 		case <-s.done:
 			return
 		case msg, ok := <-msgs:
 			if !s.deliverBridgeMessageGen(gen, msg, ok) {
+				return
+			}
+		case rawJSON, ok := <-rawMsgs:
+			if !ok {
+				s.deliverBridgeMessageGen(gen, j.BridgeMessage{}, false)
+				return
+			}
+			if !s.deliverRawBridgeFrameGen(gen, rawJSON) {
 				return
 			}
 		}
@@ -579,24 +612,35 @@ func (s *Session) deliverBridgeMessageGen(gen uint64, msg j.BridgeMessage, ok bo
 		}
 		return false
 	}
-	raw := decodeRaw(msg)
+	return s.deliverDecodedBridgeFrame(msg.From, decodeRaw(msg))
+}
+
+func (s *Session) deliverRawBridgeFrameGen(_ uint64, rawJSON []byte) bool {
+	from, raw, ok := decodeRawJSON(rawJSON)
+	if !ok {
+		return true
+	}
+	return s.deliverDecodedBridgeFrame(from, raw)
+}
+
+func (s *Session) deliverDecodedBridgeFrame(from string, raw []byte) bool {
 	// ai-generated: marks and echoes of the relay window (olcrtc#15).
-	if s.handleWindowFrame(msg.From, raw) {
+	if s.handleWindowFrame(from, raw) {
 		return true
 	}
 	payload, valid := bridgePayload(raw)
 	if !valid {
 		return true
 	}
-	if s.onPeerData != nil && msg.From != "" {
-		return s.deliverPeerBridgePayload(msg.From, payload)
+	if s.onPeerData != nil && from != "" {
+		return s.deliverPeerBridgePayload(from, payload)
 	}
 	data, accepted := s.acceptEpochFrame(payload)
 	if !accepted {
 		return true
 	}
 	if !s.requireTargetedPeer || s.peerEpoch.Load() != 0 {
-		s.latchPeerEndpoint(msg.From)
+		s.latchPeerEndpoint(from)
 	}
 	if len(data) == 0 {
 		return true
@@ -626,6 +670,296 @@ func (s *Session) deliverPeerBridgePayload(from string, payload []byte) bool {
 	}
 	s.onPeerData(from, data)
 	return true
+}
+
+func decodeRawJSON(data []byte) (string, []byte, bool) {
+	classVal, fromVal, topRaw, msgRaw, hasTopRaw, hasMsgRaw, escaped, ok := scanEndpointMessageJSON(data)
+	var from string
+	var b64 []byte
+	var hasRaw bool
+	if escaped || !ok {
+		var fb struct {
+			ColibriClass string `json:"colibriClass"`
+			From         string `json:"from"`
+			Raw          string `json:"raw"`
+			MsgPayload   *struct {
+				Raw *string `json:"raw"`
+			} `json:"msgPayload"`
+		}
+		if err := json.Unmarshal(data, &fb); err != nil {
+			return "", nil, false
+		}
+		if fb.ColibriClass != colibriClassEndpointMessage {
+			return "", nil, false
+		}
+		from = fb.From
+		if fb.MsgPayload != nil && fb.MsgPayload.Raw != nil {
+			b64 = []byte(*fb.MsgPayload.Raw)
+			hasRaw = true
+		} else if fb.Raw != "" {
+			b64 = []byte(fb.Raw)
+			hasRaw = true
+		}
+	} else {
+		if !bytes.Equal(classVal, []byte(colibriClassEndpointMessage)) {
+			return "", nil, false
+		}
+		switch {
+		case hasMsgRaw:
+			b64 = msgRaw
+			hasRaw = true
+		case hasTopRaw:
+			b64 = topRaw
+			hasRaw = true
+		}
+		if len(fromVal) > 0 {
+			from = string(fromVal)
+		}
+	}
+	if !hasRaw {
+		return "", nil, false
+	}
+	out := make([]byte, base64.StdEncoding.DecodedLen(len(b64)))
+	n, err := base64.StdEncoding.Decode(out, b64)
+	if err != nil {
+		return "", nil, false
+	}
+	return from, out[:n], true
+}
+
+func scanEndpointMessageJSON(data []byte) (classVal, fromVal, topRaw, msgRaw []byte, hasTopRaw, hasMsgRaw, escaped, ok bool) {
+	i := skipJSONSpace(data, 0)
+	if i >= len(data) || data[i] != '{' {
+		return nil, nil, nil, nil, false, false, false, false
+	}
+	i = skipJSONSpace(data, i+1)
+	if i < len(data) && data[i] == '}' {
+		return nil, nil, nil, nil, false, false, false, true
+	}
+	for i < len(data) {
+		key, next, keyEsc, keyOK := scanJSONString(data, i)
+		if !keyOK {
+			return nil, nil, nil, nil, false, false, true, false
+		}
+		if keyEsc {
+			return nil, nil, nil, nil, false, false, true, true
+		}
+		i = skipJSONSpace(data, next)
+		if i >= len(data) || data[i] != ':' {
+			return nil, nil, nil, nil, false, false, false, false
+		}
+		i = skipJSONSpace(data, i+1)
+		if i >= len(data) {
+			return nil, nil, nil, nil, false, false, false, false
+		}
+		switch string(key) {
+		case "colibriClass", "from", "raw":
+			if data[i] == '"' {
+				val, end, valEsc, valOK := scanJSONString(data, i)
+				if !valOK {
+					return nil, nil, nil, nil, false, false, true, false
+				}
+				if valEsc {
+					return nil, nil, nil, nil, false, false, true, true
+				}
+				switch string(key) {
+				case "colibriClass":
+					classVal = val
+				case "from":
+					fromVal = val
+				case "raw":
+					topRaw = val
+					hasTopRaw = true
+				}
+				i = end
+			} else {
+				end, skipOK := skipJSONValue(data, i)
+				if !skipOK {
+					return nil, nil, nil, nil, false, false, false, false
+				}
+				i = end
+			}
+		case "msgPayload":
+			if data[i] == '{' {
+				rawVal, foundRaw, payloadEsc, end, payloadOK := scanMsgPayloadRaw(data, i)
+				if !payloadOK {
+					return nil, nil, nil, nil, false, false, payloadEsc, false
+				}
+				if payloadEsc {
+					return nil, nil, nil, nil, false, false, true, true
+				}
+				if foundRaw {
+					msgRaw = rawVal
+					hasMsgRaw = true
+				}
+				i = end
+			} else {
+				end, skipOK := skipJSONValue(data, i)
+				if !skipOK {
+					return nil, nil, nil, nil, false, false, false, false
+				}
+				i = end
+			}
+		default:
+			end, skipOK := skipJSONValue(data, i)
+			if !skipOK {
+				return nil, nil, nil, nil, false, false, false, false
+			}
+			i = end
+		}
+		i = skipJSONSpace(data, i)
+		if i >= len(data) {
+			return nil, nil, nil, nil, false, false, false, false
+		}
+		if data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
+			continue
+		}
+		if data[i] == '}' {
+			return classVal, fromVal, topRaw, msgRaw, hasTopRaw, hasMsgRaw, false, true
+		}
+		return nil, nil, nil, nil, false, false, false, false
+	}
+	return nil, nil, nil, nil, false, false, false, false
+}
+
+func scanMsgPayloadRaw(data []byte, start int) (rawVal []byte, hasRaw, escaped bool, next int, ok bool) {
+	i := skipJSONSpace(data, start+1)
+	if i < len(data) && data[i] == '}' {
+		return nil, false, false, i + 1, true
+	}
+	for i < len(data) {
+		key, afterKey, keyEsc, keyOK := scanJSONString(data, i)
+		if !keyOK {
+			return nil, false, true, 0, false
+		}
+		if keyEsc {
+			return nil, false, true, 0, true
+		}
+		i = skipJSONSpace(data, afterKey)
+		if i >= len(data) || data[i] != ':' {
+			return nil, false, false, 0, false
+		}
+		i = skipJSONSpace(data, i+1)
+		if i >= len(data) {
+			return nil, false, false, 0, false
+		}
+		if string(key) == "raw" && data[i] == '"' {
+			val, end, valEsc, valOK := scanJSONString(data, i)
+			if !valOK {
+				return nil, false, true, 0, false
+			}
+			if valEsc {
+				return nil, false, true, 0, true
+			}
+			rawVal = val
+			hasRaw = true
+			i = end
+		} else {
+			end, skipOK := skipJSONValue(data, i)
+			if !skipOK {
+				return nil, false, false, 0, false
+			}
+			i = end
+		}
+		i = skipJSONSpace(data, i)
+		if i >= len(data) {
+			return nil, false, false, 0, false
+		}
+		if data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
+			continue
+		}
+		if data[i] == '}' {
+			return rawVal, hasRaw, false, i + 1, true
+		}
+		return nil, false, false, 0, false
+	}
+	return nil, false, false, 0, false
+}
+
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func scanJSONString(data []byte, start int) (val []byte, next int, escaped, ok bool) {
+	if start >= len(data) || data[start] != '"' {
+		return nil, 0, false, false
+	}
+	i := start + 1
+	for i < len(data) {
+		q := bytes.IndexByte(data[i:], '"')
+		if q < 0 {
+			return nil, 0, escaped, false
+		}
+		bs := bytes.IndexByte(data[i:i+q], '\\')
+		if bs < 0 {
+			return data[start+1 : i+q], i + q + 1, escaped, true
+		}
+		escaped = true
+		i += bs + 2
+	}
+	return nil, 0, escaped, false
+}
+
+func skipJSONValue(data []byte, start int) (int, bool) {
+	if start >= len(data) {
+		return 0, false
+	}
+	switch data[start] {
+	case '"':
+		_, next, _, ok := scanJSONString(data, start)
+		return next, ok
+	case '{', '[':
+		depth := 0
+		inString := false
+		for i := start; i < len(data); i++ {
+			c := data[i]
+			if inString {
+				if c == '\\' {
+					i++
+					continue
+				}
+				if c == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return i + 1, true
+				}
+			}
+		}
+		return 0, false
+	default:
+		i := start
+		for i < len(data) {
+			switch data[i] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				if i == start {
+					return 0, false
+				}
+				return i, true
+			}
+			i++
+		}
+		return i, i > start
+	}
 }
 
 // decodeRaw extracts the base64 payload from an EndpointMessage. It accepts
